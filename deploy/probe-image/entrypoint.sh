@@ -22,12 +22,16 @@ if [ ! -f "$CRT" ] || [ ! -f "$KEY" ] || [ ! -f "$CA" ]; then
 
   openssl req -newkey rsa:2048 -nodes -keyout "$KEY" -out /tmp/probe.csr -subj "/CN=proxy" >/dev/null 2>&1
   BODY=$(jq -n --arg t "$ARGUS_ENROLL_TOKEN" --arg c "$(cat /tmp/probe.csr)" '{token:$t, csr:$c}')
-  if ! RESP=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$BODY" "$ARGUS_ENROLL_URL"); then
-    echo "argus-probe: enrollment request failed (token used/expired, or Argus unreachable)" >&2
-    rm -f "$KEY" /tmp/probe.csr
+  # Capture body + HTTP status separately so a non-200 surfaces Argus's actual error message
+  # (curl -f would hide it).
+  HTTP=$(curl -sS -o /tmp/enroll.out -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "$BODY" "$ARGUS_ENROLL_URL" || echo "000")
+  RESP=$(cat /tmp/enroll.out 2>/dev/null || true)
+  rm -f /tmp/probe.csr /tmp/enroll.out
+  if [ "$HTTP" != "200" ]; then
+    echo "argus-probe: enrollment failed (HTTP $HTTP): ${RESP:-<no response — Argus unreachable?>}" >&2
+    rm -f "$KEY"
     exit 1
   fi
-  rm -f /tmp/probe.csr
 
   echo "$RESP" | jq -er '.certificate' > "$CRT"
   echo "$RESP" | jq -er '.ca' > "$CA"
