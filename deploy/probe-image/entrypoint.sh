@@ -14,10 +14,10 @@ CRT="$CERTS/proxy.crt"
 KEY="$CERTS/proxy.key"
 META="$CERTS/proxy.env"
 
+mkdir -p "$CERTS"
 if [ ! -f "$CRT" ] || [ ! -f "$KEY" ] || [ ! -f "$CA" ]; then
   : "${ARGUS_ENROLL_URL:?set ARGUS_ENROLL_URL to https://<argus-host>/api/enroll}"
   : "${ARGUS_ENROLL_TOKEN:?set ARGUS_ENROLL_TOKEN to the token from the Argus Probes page}"
-  mkdir -p "$CERTS"
   echo "argus-probe: enrolling against $ARGUS_ENROLL_URL"
 
   openssl req -newkey rsa:2048 -nodes -keyout "$KEY" -out /tmp/probe.csr -subj "/CN=proxy" >/dev/null 2>&1
@@ -37,6 +37,10 @@ if [ ! -f "$CRT" ] || [ ! -f "$KEY" ] || [ ! -f "$CA" ]; then
   chmod 600 "$KEY"
   echo "argus-probe: enrolled as $PROXY_NAME (core: ${CORE_HOST:-<from ZBX_SERVER_HOST>})"
 fi
+
+# The stock entrypoint runs as root then drops to the zabbix user (and fixes the spool ownership
+# itself); make sure the enrolled certs we wrote are readable by it too. Best-effort.
+chown -R zabbix:zabbix "$CERTS" 2>/dev/null || chown -R 1997:1997 "$CERTS" 2>/dev/null || true
 
 # shellcheck disable=SC1090
 . "$META"

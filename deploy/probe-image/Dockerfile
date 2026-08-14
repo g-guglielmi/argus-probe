@@ -17,6 +17,8 @@ USER root
 RUN apk add --no-cache openssl curl jq
 COPY entrypoint.sh /usr/local/bin/argus-entrypoint.sh
 RUN chmod +x /usr/local/bin/argus-entrypoint.sh
-USER 1997
 
+# Run as root (like the stock image expects): the entrypoint prepares the fresh, root-owned
+# /var/lib/zabbix volume and chowns the enrolled certs, then hands off to the stock entrypoint,
+# which fixes the spool ownership and drops to the unprivileged zabbix user to run the proxy.
 ENTRYPOINT ["/usr/local/bin/argus-entrypoint.sh"]
