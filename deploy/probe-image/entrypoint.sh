@@ -49,8 +49,9 @@ chown -R zabbix:zabbix "$CERTS" 2>/dev/null || chown -R 1997:1997 "$CERTS" 2>/de
 # shellcheck disable=SC1090
 . "$META"
 
-# The server may not know the reachable core address; allow ZBX_SERVER_HOST to supply/override it.
-CORE_HOST="${CORE_HOST:-${ZBX_SERVER_HOST:-}}"
+# An explicit ZBX_SERVER_HOST always wins (lets you re-point a probe without re-enrolling); else
+# use the core host baked in at enrollment.
+CORE_HOST="${ZBX_SERVER_HOST:-$CORE_HOST}"
 if [ -z "$CORE_HOST" ]; then
   echo "argus-probe: no core host known — set ARGUS_PROBE_CORE_HOST in Argus or ZBX_SERVER_HOST here" >&2
   exit 1
