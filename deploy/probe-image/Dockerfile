@@ -22,3 +22,7 @@ RUN chmod +x /usr/local/bin/argus-entrypoint.sh
 # /var/lib/zabbix volume and chowns the enrolled certs, then hands off to the stock entrypoint,
 # which fixes the spool ownership and drops to the unprivileged zabbix user to run the proxy.
 ENTRYPOINT ["/usr/local/bin/argus-entrypoint.sh"]
+# Overriding ENTRYPOINT clears the base image's CMD, so restore it — this is the command our
+# entrypoint hands to the stock docker-entrypoint.sh, and it carries the required --foreground
+# flag (mandatory with LogType=console).
+CMD ["/usr/sbin/zabbix_proxy", "--foreground", "-c", "/etc/zabbix/zabbix_proxy.conf"]
