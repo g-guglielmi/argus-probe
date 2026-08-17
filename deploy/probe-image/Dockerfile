@@ -6,8 +6,8 @@
 # created inside the container and never sent anywhere.
 #
 # Run it with a persistent volume and the two ARGUS_ENROLL_* env vars from the Argus Probes page:
-#   docker run -d --name argus-probe --restart unless-stopped \
-#     -v /docker/argus-probe:/var/lib/zabbix \
+#   docker run -d --name argus-proxy-<site> --restart unless-stopped \
+#     -v /docker/argus-proxy-<site>:/var/lib/zabbix \
 #     -e ARGUS_ENROLL_URL=https://monitoring.example.com/api/enroll \
 #     -e ARGUS_ENROLL_TOKEN=<token> \
 #     ghcr.io/g-guglielmi/argus-probe:latest
