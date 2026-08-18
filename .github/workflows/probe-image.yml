@@ -1,0 +1,245 @@
+name: probe-image
+
+# Builds & releases the self-enrolling argus-probe image. Two triggers, one lifecycle:
+#   * push to deploy/probe-image/** on main  -> OUR wrapper changed: rebuild + a new revision release.
+#   * schedule / manual dispatch             -> upstream watch: rebuild when the Zabbix base DIGEST
+#     moves; cut a fresh release only when the Zabbix VERSION NUMBER changes.
+#
+# argus-probe is versioned by the ZABBIX version it ships, plus a revision for our own wrapper edits:
+#   probe/v<zabbix>-r<n>   e.g. probe/v7.0.29-r1, then -r2 (wrapper fix), then 7.0.30-r1 (zabbix bump).
+# It is intentionally DECOUPLED from the app's v* semver: an app-only change never rebuilds a probe,
+# and an app release (build.yml, tag v*) no longer emits an argus-probe image at all.
+#
+# Docker Hub offers no push webhook a third party can subscribe to (only the repo owner can), so the
+# upstream half polls the base tag on a schedule — but it is change-driven, not a blind rebuild:
+#   * base DIGEST moved, same version  -> rebuild rolling tags (:latest, :zabbix-X) only, NO release
+#     (absorbs same-version Alpine/security rebuilds).
+#   * Zabbix VERSION NUMBER moved      -> release probe/v<newver>-r1.
+#   * our wrapper changed (push)       -> release probe/v<samever>-r<prev+1>.
+#
+# State (digest, version, revision) lives in deploy/probe-image/.zabbix-base, bot-committed with
+# [skip ci] so it never retriggers CI. Idle days do one cheap manifest lookup.
+#
+# Moving to a new Zabbix MAJOR.MINOR (7.2, next LTS 8.0, ...) stays manual: bump the FROM tag in
+# deploy/probe-image/Dockerfile in lockstep with upgrading the Zabbix SERVER.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/probe-image/**'
+      - '!deploy/probe-image/.zabbix-base'   # the bot rewrites this every run; never a "wrapper change"
+  schedule:
+    - cron: '17 6 * * *'   # daily ~06:17 UTC; an LTS patch line rarely moves faster
+  workflow_dispatch:        # "Run workflow" button forces an immediate check/rebuild
+
+permissions:
+  contents: write   # commit the lockfile, push the probe/v* tag, publish the Release
+  packages: write   # push the image to GHCR
+
+concurrency:
+  group: probe-image
+  cancel-in-progress: false
+
+env:
+  BASE_IMAGE: zabbix/zabbix-proxy-sqlite3:alpine-7.0-latest
+  LOCK_FILE: deploy/probe-image/.zabbix-base
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full tags so the probe/v* existence check is accurate
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Cheap, no-pull manifest lookup: the multi-arch index digest uniquely identifies the base.
+      - name: Resolve upstream base digest
+        id: base
+        run: |
+          set -euo pipefail
+          DIGEST=$(docker buildx imagetools inspect "$BASE_IMAGE" --format '{{.Manifest.Digest}}')
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Upstream base digest: $DIGEST"
+
+      - name: Read last-built state
+        id: last
+        run: |
+          set -euo pipefail
+          if [ -f "$LOCK_FILE" ]; then
+            echo "digest=$(sed -n 's/^digest=//p' "$LOCK_FILE")" >> "$GITHUB_OUTPUT"
+            echo "version=$(sed -n 's/^version=//p' "$LOCK_FILE")" >> "$GITHUB_OUTPUT"
+            REV=$(sed -n 's/^revision=//p' "$LOCK_FILE")
+            echo "revision=${REV:-0}" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "revision=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Decide whether to build
+        id: decide
+        run: |
+          set -euo pipefail
+          # A push to this workflow can only be a deploy/probe-image/** change (paths filter above).
+          WRAPPER=false
+          if [ "${{ github.event_name }}" = "push" ]; then WRAPPER=true; fi
+          BASE_MOVED=false
+          if [ "${{ steps.base.outputs.digest }}" != "${{ steps.last.outputs.digest }}" ]; then BASE_MOVED=true; fi
+          echo "wrapper=$WRAPPER" >> "$GITHUB_OUTPUT"
+          echo "base_moved=$BASE_MOVED" >> "$GITHUB_OUTPUT"
+          if [ "$WRAPPER" = "true" ] || [ "$BASE_MOVED" = "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Will build (wrapper=$WRAPPER base_moved=$BASE_MOVED)."
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "No wrapper change and base digest unchanged — nothing to do."
+          fi
+
+      # Only pulls/runs the base when something actually changed.
+      - name: Resolve Zabbix version
+        id: ver
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          set -uo pipefail
+          # Capture the full -V output (tolerate a non-zero exit); grep -m1 self-terminates so no
+          # SIGPIPE from an early-closing `head` under pipefail.
+          RAW=$(docker run --rm --entrypoint /usr/sbin/zabbix_proxy "$BASE_IMAGE" -V 2>&1 || true)
+          echo "----- zabbix_proxy -V -----"; printf '%s\n' "$RAW"; echo "---------------------------"
+          VER=$(printf '%s\n' "$RAW" | grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          if [ -z "$VER" ]; then echo "Could not parse Zabbix version (see output above)" >&2; exit 1; fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Zabbix version: $VER (previous: ${{ steps.last.outputs.version }})"
+
+      # Compute the revision and whether this build warrants a Release, and assemble the tag list.
+      # Rolling tags (:latest, :zabbix-X) are always pushed on a build; the immutable :X-rN tag is
+      # only pushed on a Release so it never moves once cut.
+      - name: Plan version & tags
+        id: plan
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          VER='${{ steps.ver.outputs.version }}'
+          PREV_VER='${{ steps.last.outputs.version }}'
+          PREV_REV='${{ steps.last.outputs.revision }}'
+          WRAPPER='${{ steps.decide.outputs.wrapper }}'
+
+          if [ "$VER" != "$PREV_VER" ]; then
+            REV=1;                 RELEASE=true;  REASON=zabbix        # new Zabbix version
+          elif [ "$WRAPPER" = "true" ]; then
+            REV=$((PREV_REV + 1)); RELEASE=true;  REASON=wrapper       # our wrapper changed
+          else
+            REV="$PREV_REV";       RELEASE=false; REASON=base-refresh  # same-version base rebuild
+          fi
+          if [ -z "$REV" ] || [ "$REV" = "0" ]; then REV=1; fi
+
+          IMAGE="ghcr.io/${{ github.repository_owner }}/argus-probe"
+          echo "revision=$REV" >> "$GITHUB_OUTPUT"
+          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+          echo "tag=probe/v${VER}-r${REV}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:latest"
+            echo "${IMAGE}:zabbix-${VER}"
+            if [ "$RELEASE" = "true" ]; then echo "${IMAGE}:${VER}-r${REV}"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Planned: version=$VER revision=$REV release=$RELEASE reason=$REASON"
+
+      - name: Build & push argus-probe
+        if: steps.decide.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./deploy/probe-image
+          file: ./deploy/probe-image/Dockerfile
+          pull: true          # re-resolve the freshest base at build time
+          push: true
+          tags: ${{ steps.plan.outputs.tags }}
+          labels: |
+            org.opencontainers.image.base.name=${{ env.BASE_IMAGE }}
+            io.argus.zabbix.version=${{ steps.ver.outputs.version }}
+            io.argus.probe.revision=${{ steps.plan.outputs.revision }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Record the new state (always, when built) and cut a Release when the plan calls for one.
+      - name: Record state & release
+        if: steps.decide.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ steps.ver.outputs.version }}
+          PREV_VER: ${{ steps.last.outputs.version }}
+          REV: ${{ steps.plan.outputs.revision }}
+          RELEASE: ${{ steps.plan.outputs.release }}
+          REASON: ${{ steps.plan.outputs.reason }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          NEW_DIGEST: ${{ steps.base.outputs.digest }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          printf 'digest=%s\nversion=%s\nrevision=%s\n' "$NEW_DIGEST" "$VER" "$REV" > "$LOCK_FILE"
+          git add "$LOCK_FILE"
+          git commit -m "ci(probe): track Zabbix $VER-r$REV [skip ci]"
+          git push origin HEAD:main
+
+          if [ "$RELEASE" != "true" ]; then
+            echo "Same-version base refresh — rebuilt rolling tags only, no Release."
+            exit 0
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists — skipping Release."
+            exit 0
+          fi
+
+          OWNER='${{ github.repository_owner }}'
+          if [ "$REASON" = "wrapper" ]; then
+            {
+              echo "**argus-probe wrapper update** — the self-enrolling probe image changed"
+              echo "(entrypoint / Dockerfile under \`deploy/probe-image/\`); the Zabbix base is unchanged."
+              echo
+              echo "- **Zabbix:** ${VER} (unchanged) · **revision:** r${REV}"
+              echo "- No \`argus\` app change is implied — the app image is versioned separately (\`vX.Y.Z\`)."
+            } > notes.md
+            TITLE="argus-probe — Zabbix ${VER} (r${REV})"
+          else
+            {
+              echo "Automated rebuild — the upstream **Zabbix proxy** base image published a new version."
+              echo
+              echo "- **Zabbix:** ${PREV_VER:-(initial)} → **${VER}** · **revision:** r${REV}"
+              echo "- **Base image:** \`${BASE_IMAGE}\`"
+              echo "- **Base digest:** \`${NEW_DIGEST}\`"
+              echo "- Upstream release notes: https://www.zabbix.com/rn/rn${VER}"
+              echo "- No Argus code changed — the \`argus\` app image is unaffected."
+            } > notes.md
+            TITLE="argus-probe — Zabbix ${VER}"
+          fi
+          {
+            echo
+            echo "**Pull:**"
+            echo '```bash'
+            echo "docker pull ghcr.io/${OWNER}/argus-probe:latest   # rolling"
+            echo "# pin the Zabbix line:  ghcr.io/${OWNER}/argus-probe:zabbix-${VER}"
+            echo "# pin exactly:          ghcr.io/${OWNER}/argus-probe:${VER}-r${REV}"
+            echo '```'
+            echo
+            echo "Probe hosts on Watchtower / unRAID auto-update; manual hosts, see \`deploy/README.md\`."
+          } >> notes.md
+
+          git tag -a "$TAG" -m "argus-probe: Zabbix ${VER} (r${REV})"
+          git push origin "$TAG"
+          gh release create "$TAG" --title "$TITLE" --notes-file notes.md
