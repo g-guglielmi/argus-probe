@@ -166,6 +166,8 @@ jobs:
           file: ./deploy/probe-image/Dockerfile
           pull: true          # re-resolve the freshest base at build time
           push: true
+          build-args: |
+            PROBE_VERSION=${{ steps.ver.outputs.version }}-r${{ steps.plan.outputs.revision }}
           tags: ${{ steps.plan.outputs.tags }}
           labels: |
             org.opencontainers.image.base.name=${{ env.BASE_IMAGE }}

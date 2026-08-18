@@ -14,9 +14,19 @@
 FROM zabbix/zabbix-proxy-sqlite3:alpine-7.0-latest
 
 USER root
-RUN apk add --no-cache openssl curl jq
+# openssl/curl/jq: enrollment + check-in. docker-cli + compose plugin: used ONLY by the opt-in
+# updater sidecar (ARGUS_PROBE_ROLE=updater) to recreate the proxy; inert for the proxy role.
+RUN apk add --no-cache openssl curl jq docker-cli docker-cli-compose
+
+# Bake the image version (Zabbix version + our wrapper revision, e.g. "7.0.29-r1") so the running
+# probe can report it to Argus at check-in. Supplied by CI (probe-image.yml); "dev" for local builds.
+ARG PROBE_VERSION=dev
+RUN echo "$PROBE_VERSION" > /etc/argus-probe.version
+LABEL io.argus.probe.version=$PROBE_VERSION
+
 COPY entrypoint.sh /usr/local/bin/argus-entrypoint.sh
-RUN chmod +x /usr/local/bin/argus-entrypoint.sh
+COPY updater.sh /usr/local/bin/argus-updater.sh
+RUN chmod +x /usr/local/bin/argus-entrypoint.sh /usr/local/bin/argus-updater.sh
 
 # Run as root (like the stock image expects): the entrypoint prepares the fresh, root-owned
 # /var/lib/zabbix volume and chowns the enrolled certs, then hands off to the stock entrypoint,
