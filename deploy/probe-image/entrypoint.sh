@@ -8,6 +8,12 @@
 # because the enrollment token is single-use.
 set -eu
 
+# Role switch: an opt-in "updater" sidecar runs the self-update loop instead of the Zabbix proxy.
+# It never enrolls — it reads the proxy's check-in credential from the shared volume.
+if [ "${ARGUS_PROBE_ROLE:-proxy}" = "updater" ]; then
+  exec /usr/local/bin/argus-updater.sh
+fi
+
 CERTS=/var/lib/zabbix/enroll
 CA="$CERTS/ca.crt"
 CRT="$CERTS/proxy.crt"
@@ -37,8 +43,13 @@ if [ ! -f "$CRT" ] || [ ! -f "$KEY" ] || [ ! -f "$CA" ]; then
   echo "$RESP" | jq -er '.ca' > "$CA"
   PROXY_NAME=$(echo "$RESP" | jq -er '.proxy_name')
   CORE_HOST=$(echo "$RESP" | jq -r '.core_host // ""')
-  printf 'PROXY_NAME=%s\nCORE_HOST=%s\n' "$PROXY_NAME" "$CORE_HOST" > "$META"
-  chmod 600 "$KEY"
+  # Long-lived check-in credential (fleet updates): report our version + read the fleet target.
+  # Absent on older Argus servers — the probe simply won't participate in fleet updates then.
+  PROBE_TOKEN=$(echo "$RESP" | jq -r '.probe_token // ""')
+  CHECKIN_URL=$(echo "$RESP" | jq -r '.checkin_url // ""')
+  printf 'PROXY_NAME=%s\nCORE_HOST=%s\nPROBE_TOKEN=%s\nCHECKIN_URL=%s\n' \
+    "$PROXY_NAME" "$CORE_HOST" "$PROBE_TOKEN" "$CHECKIN_URL" > "$META"
+  chmod 600 "$KEY" "$META"
   echo "argus-probe: enrolled as $PROXY_NAME (core: ${CORE_HOST:-<from ZBX_SERVER_HOST>})"
 fi
 
@@ -69,6 +80,27 @@ export ZBX_TLSCERTFILE="$CRT"
 export ZBX_TLSKEYFILE="$KEY"
 export ZBX_TLSSERVERCERTISSUER="${ZBX_TLSSERVERCERTISSUER:-CN=Monitoring Core CA}"
 export ZBX_TLSSERVERCERTSUBJECT="${ZBX_TLSSERVERCERTSUBJECT:-CN=zabbix-core}"
+
+# Fleet check-in reporter: every 5 min, report our running version + self-updater flag to Argus
+# and receive the fleet target. Report-only (no Docker socket); the opt-in self-updater is a
+# separate sidecar. Runs as a background child so the Zabbix proxy stays PID 1. Best-effort: any
+# failure (older Argus, transient network) is ignored and retried next tick.
+PROBE_VERSION="$(cat /etc/argus-probe.version 2>/dev/null || echo dev)"
+SELFUPDATE="${ARGUS_PROBE_SELFUPDATE:-0}"
+if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
+  echo "argus-probe: fleet check-in enabled -> $CHECKIN_URL (version $PROBE_VERSION)"
+  (
+    # A short initial delay lets the proxy come up before the first report.
+    sleep 20
+    while true; do
+      curl -sS -m 15 -o /dev/null \
+        -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
+        -d "$(jq -nc --arg v "$PROBE_VERSION" --argjson su "$([ "$SELFUPDATE" = "1" ] && echo true || echo false)" '{version:$v, selfupdate:$su}')" \
+        "$CHECKIN_URL" 2>/dev/null || true
+      sleep 300
+    done
+  ) &
+fi
 
 echo "argus-probe: starting Zabbix proxy '$ZBX_HOSTNAME' -> $ZBX_SERVER_HOST:10051"
 exec /usr/bin/docker-entrypoint.sh "$@"

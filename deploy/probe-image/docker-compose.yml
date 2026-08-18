@@ -1,0 +1,45 @@
+# Argus probe with opt-in, Argus-coordinated self-update.
+#
+# The proxy runs pinned to ${ARGUS_PROBE_TAG}; the updater sidecar asks Argus for the fleet target
+# version and, when it changes, rewrites ARGUS_PROBE_TAG in .env and recreates the proxy. Argus is
+# the control plane, the probe converges — central version control + fleet visibility, no
+# third-party updater container, and the Docker socket is exposed only to the sidecar.
+#
+# Quick start (fill the .env values from the Argus "Add probe" wizard, Compose tab):
+#   ARGUS_PROXY_NAME=argus-proxy-<site>
+#   ARGUS_ENROLL_URL=https://<argus-host>/api/enroll
+#   ARGUS_ENROLL_TOKEN=<single-use token>
+#   ARGUS_PROBE_TAG=latest
+#   # ZBX_SERVER_HOST=<core-host:reachable-on-10051>   # only if Argus didn't bake one in
+# Then:  docker compose up -d
+#
+# Drop the `updater` service (or `docker compose up -d proxy`) to run the probe without self-update.
+
+name: argus-probe
+
+services:
+  proxy:
+    image: ghcr.io/g-guglielmi/argus-probe:${ARGUS_PROBE_TAG:-latest}
+    container_name: ${ARGUS_PROXY_NAME:-argus-proxy}
+    restart: unless-stopped
+    environment:
+      ARGUS_ENROLL_URL: ${ARGUS_ENROLL_URL:-}
+      ARGUS_ENROLL_TOKEN: ${ARGUS_ENROLL_TOKEN:-}
+      ARGUS_PROBE_SELFUPDATE: "1"          # advertises "auto-update on" to Argus (the sidecar acts)
+      ZBX_SERVER_HOST: ${ZBX_SERVER_HOST:-}
+    volumes:
+      - probe-data:/var/lib/zabbix
+
+  updater:
+    image: ghcr.io/g-guglielmi/argus-probe:${ARGUS_PROBE_TAG:-latest}
+    container_name: ${ARGUS_PROXY_NAME:-argus-proxy}-updater
+    restart: unless-stopped
+    environment:
+      ARGUS_PROBE_ROLE: updater
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # opt-in: needed to recreate the proxy
+      - ./:/compose                                 # this project dir (compose file + .env)
+      - probe-data:/probe:ro                        # read the proxy's check-in credential
+
+volumes:
+  probe-data:
