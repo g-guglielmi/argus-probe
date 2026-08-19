@@ -64,6 +64,24 @@ chown -R zabbix:zabbix "$CERTS" 2>/dev/null || chown -R 1997:1997 "$CERTS" 2>/de
 # shellcheck disable=SC1090
 . "$META"
 
+# --- fleet check-in credential (resolved here, while CORE_HOST still holds the enrolled value) ---
+# A probe enrolled before fleet updates has no token in proxy.env; supply it once as
+# ARGUS_PROBE_TOKEN (Argus "Enable reporting" mints it). An env-supplied token WINS (so you can
+# rotate it) and is SAVED to proxy.env - so you can remove the env var on later runs and reporting
+# keeps working. The check-in URL is derived from the enroll URL when not given.
+PRIOR_TOKEN="${PROBE_TOKEN:-}"
+if [ -n "${ARGUS_PROBE_TOKEN:-}" ]; then PROBE_TOKEN="$ARGUS_PROBE_TOKEN"; fi
+if [ -n "${ARGUS_CHECKIN_URL:-}" ]; then CHECKIN_URL="$ARGUS_CHECKIN_URL"; fi
+if [ -z "${CHECKIN_URL:-}" ] && [ -n "${ARGUS_ENROLL_URL:-}" ]; then
+  CHECKIN_URL=$(printf '%s' "$ARGUS_ENROLL_URL" | sed 's#/api/enroll#/api/probes/checkin#')
+fi
+if [ -n "${PROBE_TOKEN:-}" ] && [ "${PROBE_TOKEN:-}" != "$PRIOR_TOKEN" ]; then
+  printf 'PROXY_NAME=%s\nCORE_HOST=%s\nPROBE_TOKEN=%s\nCHECKIN_URL=%s\n' \
+    "${PROXY_NAME:-}" "${CORE_HOST:-}" "$PROBE_TOKEN" "${CHECKIN_URL:-}" > "$META"
+  chmod 600 "$META" 2>/dev/null || true
+  echo "argus-probe: check-in credential saved to the data volume - you can remove ARGUS_PROBE_TOKEN now"
+fi
+
 # An explicit ZBX_SERVER_HOST always wins (lets you re-point a probe without re-enrolling); else
 # use the core host baked in at enrollment.
 CORE_HOST="${ZBX_SERVER_HOST:-$CORE_HOST}"
@@ -88,16 +106,8 @@ export ZBX_TLSSERVERCERTSUBJECT="${ZBX_TLSSERVERCERTSUBJECT:-CN=zabbix-core}"
 # Fleet check-in reporter: every 5 min, report our running version + self-updater flag to Argus
 # and receive the fleet target. Report-only (no Docker socket); the opt-in self-updater is a
 # separate sidecar. Runs as a background child so the Zabbix proxy stays PID 1. Best-effort: any
-# failure (older Argus, transient network) is ignored and retried next tick.
-# A probe enrolled before fleet updates existed has no token in proxy.env. Let the operator opt it
-# into version reporting by supplying the credential as an env var (Argus "Enable reporting" mints
-# it) - no re-enrollment needed. The check-in URL is derived from the enroll URL when not given.
-PROBE_TOKEN="${PROBE_TOKEN:-${ARGUS_PROBE_TOKEN:-}}"
-CHECKIN_URL="${CHECKIN_URL:-${ARGUS_CHECKIN_URL:-}}"
-if [ -z "${CHECKIN_URL:-}" ] && [ -n "${ARGUS_ENROLL_URL:-}" ]; then
-  CHECKIN_URL=$(printf '%s' "$ARGUS_ENROLL_URL" | sed 's#/api/enroll#/api/probes/checkin#')
-fi
-
+# failure (older Argus, transient network) is ignored and retried next tick. The check-in
+# credential (PROBE_TOKEN / CHECKIN_URL) was resolved above.
 PROBE_VERSION="$(cat /etc/argus-probe.version 2>/dev/null || echo dev)"
 # Self-update is only real when the operator opted in AND the Docker socket is actually mounted;
 # report the capability accurately so the dashboard only offers "Update now" when we can act on it.
