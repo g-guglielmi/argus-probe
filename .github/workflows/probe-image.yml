@@ -28,7 +28,8 @@ on:
     branches: [main]
     paths:
       - 'deploy/probe-image/**'
-      - '!deploy/probe-image/.zabbix-base'   # the bot rewrites this every run; never a "wrapper change"
+      - '!deploy/probe-image/.zabbix-base'        # the bot rewrites this every run; never a "wrapper change"
+      - '!deploy/probe-image/docker-compose.yml'  # a deploy artifact, not part of the built image
   schedule:
     - cron: '17 6 * * *'   # daily ~06:17 UTC; an LTS patch line rarely moves faster
   workflow_dispatch:        # "Run workflow" button forces an immediate check/rebuild
