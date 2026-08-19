@@ -7,7 +7,8 @@
 # network, labels - swapping only the image, so whatever flags the operator deployed with survive.
 #
 # Safety: the old container is stopped and renamed (not removed) first, and restored if the new
-# container fails to create or start - a bad pull/create never leaves the site without a probe.
+# container fails to create, start, OR stay up (a crash-looping bad image is rolled back too) - a
+# bad pull/create/build never leaves the site without a probe.
 #
 # Inputs (env): ARGUS_RECREATE_TARGET = the proxy container id/name; ARGUS_RECREATE_TAG = the image
 # tag to converge on (e.g. "7.0.29-r2" or "latest").
@@ -16,6 +17,8 @@ set -eu
 SOCK=/var/run/docker.sock
 TARGET="${ARGUS_RECREATE_TARGET:?set ARGUS_RECREATE_TARGET}"
 TAG="${ARGUS_RECREATE_TAG:?set ARGUS_RECREATE_TAG}"
+HEALTH_STABLE="${ARGUS_HEALTH_STABLE:-20}"   # seconds the new proxy must stay up to pass
+VERIFY_TIMEOUT="${ARGUS_VERIFY_TIMEOUT:-90}" # give up (and roll back) after this long
 
 # api METHOD PATH [BODY] - talk to the Docker Engine API over the unix socket.
 api() {
@@ -24,6 +27,31 @@ api() {
   else
     curl -sS --unix-socket "$SOCK" -X "$1" "http://localhost$2"
   fi
+}
+
+# verify NAME - return 0 once the new container has stayed Running and not Restarting for
+# HEALTH_STABLE seconds; return 1 on timeout. A crash-loop guard: a bad image that starts then exits
+# (or reboots under a restart policy) never reaches a stable window, so it gets rolled back. The
+# argus-probe runs an ACTIVE Zabbix proxy (dials out, no listening HTTP endpoint), so this is
+# container-stability only - unlike the core's updater there's no /healthz to probe.
+verify() {
+  _name="$1"
+  sleep 5   # brief grace for startup
+  _need=$(( HEALTH_STABLE / 3 )); [ "$_need" -lt 1 ] && _need=1
+  _stable=0
+  _end=$(( $(date +%s) + VERIFY_TIMEOUT ))
+  while [ "$(date +%s)" -lt "$_end" ]; do
+    _json=$(api GET "/containers/$_name/json")
+    _running=$(printf '%s' "$_json" | jq -r '.State.Running // false')
+    _restarting=$(printf '%s' "$_json" | jq -r '.State.Restarting // false')
+    if [ "$_running" != "true" ] || [ "$_restarting" = "true" ]; then
+      _stable=0; sleep 3; continue
+    fi
+    _stable=$(( _stable + 1 ))
+    [ "$_stable" -ge "$_need" ] && return 0
+    sleep 3
+  done
+  return 1
 }
 
 INSPECT=$(api GET "/containers/$TARGET/json")
@@ -80,6 +108,15 @@ fi
 if ! api POST "/containers/$NEWID/start" >/dev/null 2>&1; then
   echo "argus-recreate: start failed" >&2
   api DELETE "/containers/$NEWID?force=true" >/dev/null 2>&1 || true
+  rollback
+  exit 1
+fi
+
+# Verify the new proxy stays up (crash-loop guard); roll back to the previous container if it doesn't.
+if ! verify "$NAME"; then
+  echo "argus-recreate: new proxy did not stay healthy - rolling back to the previous version" >&2
+  api POST "/containers/$NAME/stop?t=10" >/dev/null 2>&1 || true
+  api DELETE "/containers/$NAME?force=true" >/dev/null 2>&1 || true
   rollback
   exit 1
 fi
