@@ -28,7 +28,11 @@ services:
       ARGUS_PROBE_SELFUPDATE: "1"          # advertises "auto-update on" to Argus (the sidecar acts)
       ZBX_SERVER_HOST: ${ZBX_SERVER_HOST:-}
     volumes:
-      - probe-data:/var/lib/zabbix
+      # Bind mounts (not named volumes) so everything lives in ./data next to this file.
+      - ./data:/var/lib/zabbix
+      # The base Zabbix image marks snmptraps as a VOLUME; bind it too, or Docker creates an
+      # anonymous volume for it.
+      - ./data/snmptraps:/var/lib/zabbix/snmptraps
 
   updater:
     image: ghcr.io/g-guglielmi/argus-probe:${ARGUS_PROBE_TAG:-latest}
@@ -39,7 +43,4 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # opt-in: needed to recreate the proxy
       - ./:/compose                                 # this project dir (compose file + .env)
-      - probe-data:/probe:ro                        # read the proxy's check-in credential
-
-volumes:
-  probe-data:
+      - ./data:/probe:ro                            # read the proxy's check-in credential
