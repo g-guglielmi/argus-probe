@@ -26,7 +26,8 @@ LABEL io.argus.probe.version=$PROBE_VERSION
 
 COPY entrypoint.sh /usr/local/bin/argus-entrypoint.sh
 COPY updater.sh /usr/local/bin/argus-updater.sh
-RUN chmod +x /usr/local/bin/argus-entrypoint.sh /usr/local/bin/argus-updater.sh
+COPY recreate.sh /usr/local/bin/argus-recreate.sh
+RUN chmod +x /usr/local/bin/argus-entrypoint.sh /usr/local/bin/argus-updater.sh /usr/local/bin/argus-recreate.sh
 
 # Run as root (like the stock image expects): the entrypoint prepares the fresh, root-owned
 # /var/lib/zabbix volume and chowns the enrolled certs, then hands off to the stock entrypoint,
