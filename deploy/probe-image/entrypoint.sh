@@ -89,6 +89,15 @@ export ZBX_TLSSERVERCERTSUBJECT="${ZBX_TLSSERVERCERTSUBJECT:-CN=zabbix-core}"
 # and receive the fleet target. Report-only (no Docker socket); the opt-in self-updater is a
 # separate sidecar. Runs as a background child so the Zabbix proxy stays PID 1. Best-effort: any
 # failure (older Argus, transient network) is ignored and retried next tick.
+# A probe enrolled before fleet updates existed has no token in proxy.env. Let the operator opt it
+# into version reporting by supplying the credential as an env var (Argus "Enable reporting" mints
+# it) - no re-enrollment needed. The check-in URL is derived from the enroll URL when not given.
+PROBE_TOKEN="${PROBE_TOKEN:-${ARGUS_PROBE_TOKEN:-}}"
+CHECKIN_URL="${CHECKIN_URL:-${ARGUS_CHECKIN_URL:-}}"
+if [ -z "${CHECKIN_URL:-}" ] && [ -n "${ARGUS_ENROLL_URL:-}" ]; then
+  CHECKIN_URL=$(printf '%s' "$ARGUS_ENROLL_URL" | sed 's#/api/enroll#/api/probes/checkin#')
+fi
+
 PROBE_VERSION="$(cat /etc/argus-probe.version 2>/dev/null || echo dev)"
 # Self-update is only real when the operator opted in AND the Docker socket is actually mounted;
 # report the capability accurately so the dashboard only offers "Update now" when we can act on it.
