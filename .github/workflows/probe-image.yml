@@ -11,7 +11,7 @@ name: probe-image
 # and an app release (build.yml, tag v*) no longer emits an argus-probe image at all.
 #
 # Docker Hub offers no push webhook a third party can subscribe to (only the repo owner can), so the
-# upstream half polls the base tag on a schedule — but it is change-driven, not a blind rebuild:
+# upstream half polls the base tag on a schedule - but it is change-driven, not a blind rebuild:
 #   * base DIGEST moved, same version  -> rebuild rolling tags (:latest, :zabbix-X) only, NO release
 #     (absorbs same-version Alpine/security rebuilds).
 #   * Zabbix VERSION NUMBER moved      -> release probe/v<newver>-r1.
@@ -102,7 +102,7 @@ jobs:
             echo "Will build (wrapper=$WRAPPER base_moved=$BASE_MOVED)."
           else
             echo "build=false" >> "$GITHUB_OUTPUT"
-            echo "No wrapper change and base digest unchanged — nothing to do."
+            echo "No wrapper change and base digest unchanged - nothing to do."
           fi
 
       # Only pulls/runs the base when something actually changed.
@@ -199,36 +199,36 @@ jobs:
           git push origin HEAD:main
 
           if [ "$RELEASE" != "true" ]; then
-            echo "Same-version base refresh — rebuilt rolling tags only, no Release."
+            echo "Same-version base refresh - rebuilt rolling tags only, no Release."
             exit 0
           fi
 
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Tag $TAG already exists — skipping Release."
+            echo "Tag $TAG already exists - skipping Release."
             exit 0
           fi
 
           OWNER='${{ github.repository_owner }}'
           if [ "$REASON" = "wrapper" ]; then
             {
-              echo "**argus-probe wrapper update** — the self-enrolling probe image changed"
+              echo "**argus-probe wrapper update** - the self-enrolling probe image changed"
               echo "(entrypoint / Dockerfile under \`deploy/probe-image/\`); the Zabbix base is unchanged."
               echo
               echo "- **Zabbix:** ${VER} (unchanged) · **revision:** r${REV}"
-              echo "- No \`argus\` app change is implied — the app image is versioned separately (\`vX.Y.Z\`)."
+              echo "- No \`argus\` app change is implied - the app image is versioned separately (\`vX.Y.Z\`)."
             } > notes.md
-            TITLE="argus-probe — Zabbix ${VER} (r${REV})"
+            TITLE="argus-probe - Zabbix ${VER} (r${REV})"
           else
             {
-              echo "Automated rebuild — the upstream **Zabbix proxy** base image published a new version."
+              echo "Automated rebuild - the upstream **Zabbix proxy** base image published a new version."
               echo
               echo "- **Zabbix:** ${PREV_VER:-(initial)} → **${VER}** · **revision:** r${REV}"
               echo "- **Base image:** \`${BASE_IMAGE}\`"
               echo "- **Base digest:** \`${NEW_DIGEST}\`"
               echo "- Upstream release notes: https://www.zabbix.com/rn/rn${VER}"
-              echo "- No Argus code changed — the \`argus\` app image is unaffected."
+              echo "- No Argus code changed - the \`argus\` app image is unaffected."
             } > notes.md
-            TITLE="argus-probe — Zabbix ${VER}"
+            TITLE="argus-probe - Zabbix ${VER}"
           fi
           {
             echo

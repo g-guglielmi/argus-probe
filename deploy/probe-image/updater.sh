@@ -42,7 +42,7 @@ while true; do
       CUR=$(sed -n 's/^ARGUS_PROBE_TAG=//p' "$ENV_FILE" 2>/dev/null || true)
 
       if [ "$TAG" != "$CUR" ]; then
-        echo "argus-updater: fleet target=$TARGET (tag $TAG) differs from current '${CUR:-unset}' — updating proxy"
+        echo "argus-updater: fleet target=$TARGET (tag $TAG) differs from current '${CUR:-unset}' - updating proxy"
         touch "$ENV_FILE"
         grep -v -E '^ARGUS_PROBE_TAG=' "$ENV_FILE" > "$ENV_FILE.tmp" 2>/dev/null || true
         echo "ARGUS_PROBE_TAG=$TAG" >> "$ENV_FILE.tmp"
