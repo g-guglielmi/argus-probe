@@ -2,7 +2,7 @@
 #
 # The proxy runs pinned to ${ARGUS_PROBE_TAG}; the updater sidecar asks Argus for the fleet target
 # version and, when it changes, rewrites ARGUS_PROBE_TAG in .env and recreates the proxy. Argus is
-# the control plane, the probe converges — central version control + fleet visibility, no
+# the control plane, the probe converges - central version control + fleet visibility, no
 # third-party updater container, and the Docker socket is exposed only to the sidecar.
 #
 # Quick start (fill the .env values from the Argus "Add probe" wizard, Compose tab):

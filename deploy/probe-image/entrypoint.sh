@@ -4,12 +4,12 @@
 # On first boot (no certs on the data volume yet) it generates a keypair + CSR locally, redeems
 # the single-use ARGUS_ENROLL_TOKEN against Argus (/api/enroll), and writes the signed cert +
 # ca.crt. The private key never leaves this container. On later boots the certs already exist, so
-# enrollment is skipped. Certs live under the mounted /var/lib/zabbix volume — keep it persistent,
+# enrollment is skipped. Certs live under the mounted /var/lib/zabbix volume - keep it persistent,
 # because the enrollment token is single-use.
 set -eu
 
 # Role switch: an opt-in "updater" sidecar runs the self-update loop instead of the Zabbix proxy.
-# It never enrolls — it reads the proxy's check-in credential from the shared volume.
+# It never enrolls - it reads the proxy's check-in credential from the shared volume.
 if [ "${ARGUS_PROBE_ROLE:-proxy}" = "updater" ]; then
   exec /usr/local/bin/argus-updater.sh
 fi
@@ -34,7 +34,7 @@ if [ ! -f "$CRT" ] || [ ! -f "$KEY" ] || [ ! -f "$CA" ]; then
   RESP=$(cat /tmp/enroll.out 2>/dev/null || true)
   rm -f /tmp/probe.csr /tmp/enroll.out
   if [ "$HTTP" != "200" ]; then
-    echo "argus-probe: enrollment failed (HTTP $HTTP): ${RESP:-<no response — Argus unreachable?>}" >&2
+    echo "argus-probe: enrollment failed (HTTP $HTTP): ${RESP:-<no response - Argus unreachable?>}" >&2
     rm -f "$KEY"
     exit 1
   fi
@@ -44,7 +44,7 @@ if [ ! -f "$CRT" ] || [ ! -f "$KEY" ] || [ ! -f "$CA" ]; then
   PROXY_NAME=$(echo "$RESP" | jq -er '.proxy_name')
   CORE_HOST=$(echo "$RESP" | jq -r '.core_host // ""')
   # Long-lived check-in credential (fleet updates): report our version + read the fleet target.
-  # Absent on older Argus servers — the probe simply won't participate in fleet updates then.
+  # Absent on older Argus servers - the probe simply won't participate in fleet updates then.
   PROBE_TOKEN=$(echo "$RESP" | jq -r '.probe_token // ""')
   CHECKIN_URL=$(echo "$RESP" | jq -r '.checkin_url // ""')
   printf 'PROXY_NAME=%s\nCORE_HOST=%s\nPROBE_TOKEN=%s\nCHECKIN_URL=%s\n' \
@@ -64,7 +64,7 @@ chown -R zabbix:zabbix "$CERTS" 2>/dev/null || chown -R 1997:1997 "$CERTS" 2>/de
 # use the core host baked in at enrollment.
 CORE_HOST="${ZBX_SERVER_HOST:-$CORE_HOST}"
 if [ -z "$CORE_HOST" ]; then
-  echo "argus-probe: no core host known — set ARGUS_PROBE_CORE_HOST in Argus or ZBX_SERVER_HOST here" >&2
+  echo "argus-probe: no core host known - set ARGUS_PROBE_CORE_HOST in Argus or ZBX_SERVER_HOST here" >&2
   exit 1
 fi
 
