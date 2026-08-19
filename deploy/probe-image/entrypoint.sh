@@ -8,10 +8,14 @@
 # because the enrollment token is single-use.
 set -eu
 
-# Role switch: an opt-in "updater" sidecar runs the self-update loop instead of the Zabbix proxy.
-# It never enrolls - it reads the proxy's check-in credential from the shared volume.
+# Role switch: opt-in helper roles run instead of the Zabbix proxy.
+#   updater  - long-running compose sidecar that polls the target and converges (needs the socket).
+#   recreate - short-lived, one-shot: recreate the proxy container on a new image, then exit.
 if [ "${ARGUS_PROBE_ROLE:-proxy}" = "updater" ]; then
   exec /usr/local/bin/argus-updater.sh
+fi
+if [ "${ARGUS_PROBE_ROLE:-proxy}" = "recreate" ]; then
+  exec /usr/local/bin/argus-recreate.sh
 fi
 
 CERTS=/var/lib/zabbix/enroll
@@ -86,17 +90,39 @@ export ZBX_TLSSERVERCERTSUBJECT="${ZBX_TLSSERVERCERTSUBJECT:-CN=zabbix-core}"
 # separate sidecar. Runs as a background child so the Zabbix proxy stays PID 1. Best-effort: any
 # failure (older Argus, transient network) is ignored and retried next tick.
 PROBE_VERSION="$(cat /etc/argus-probe.version 2>/dev/null || echo dev)"
-SELFUPDATE="${ARGUS_PROBE_SELFUPDATE:-0}"
+# Self-update is only real when the operator opted in AND the Docker socket is actually mounted;
+# report the capability accurately so the dashboard only offers "Update now" when we can act on it.
+SELFUPDATE=0
+if [ "${ARGUS_PROBE_SELFUPDATE:-0}" = "1" ] && [ -S /var/run/docker.sock ]; then SELFUPDATE=1; fi
+
 if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
-  echo "argus-probe: fleet check-in enabled -> $CHECKIN_URL (version $PROBE_VERSION)"
+  echo "argus-probe: fleet check-in enabled -> $CHECKIN_URL (version $PROBE_VERSION, selfupdate=$SELFUPDATE)"
   (
     # A short initial delay lets the proxy come up before the first report.
     sleep 20
     while true; do
-      curl -sS -m 15 -o /dev/null \
+      RESP=$(curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
         -d "$(jq -nc --arg v "$PROBE_VERSION" --argjson su "$([ "$SELFUPDATE" = "1" ] && echo true || echo false)" '{version:$v, selfupdate:$su}')" \
-        "$CHECKIN_URL" 2>/dev/null || true
+        "$CHECKIN_URL" 2>/dev/null || echo '')
+      # A dashboard-requested self-update arrives as {"update":"<tag>"}. Converge by spawning the
+      # short-lived recreate helper (a sister container - the proxy can't rm -f itself mid-update).
+      if [ "$SELFUPDATE" = "1" ]; then
+        UPDATE_TAG=$(printf '%s' "$RESP" | jq -r '.update // empty' 2>/dev/null || true)
+        if [ -n "$UPDATE_TAG" ]; then
+          SELF=$(cat /etc/hostname)
+          SELF_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$SELF" 2>/dev/null || echo '')
+          if [ -n "$SELF_IMAGE" ]; then
+            echo "argus-probe: self-update to $UPDATE_TAG requested - spawning recreate helper"
+            docker run -d --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -e ARGUS_PROBE_ROLE=recreate \
+              -e ARGUS_RECREATE_TARGET="$SELF" \
+              -e ARGUS_RECREATE_TAG="$UPDATE_TAG" \
+              "$SELF_IMAGE" >/dev/null 2>&1 || echo "argus-probe: could not spawn recreate helper" >&2
+          fi
+        fi
+      fi
       sleep 300
     done
   ) &
