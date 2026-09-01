@@ -81,6 +81,10 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
+          # Mark as a pre-release so the probe-image versioning track (probe-vm/vX.Y.Z) never claims
+          # the repo's "Latest" badge - that belongs to the app's vX.Y.Z releases. GitHub has one flat
+          # release list, so this keeps the two series visually distinct.
+          prerelease: true
           files: |
             deploy/probe-vm/output/argus-probe-vm.qcow2
             deploy/probe-vm/output/argus-probe-vm.vhd.gz
