@@ -1,0 +1,14 @@
+#cloud-config
+# Build-time only: this seed lets Packer SSH into the stock Debian cloud image to provision it. The
+# packer user (and password login) is removed again in the shutdown step, so it never ships in the
+# golden image. Not to be confused with the DEPLOY-time cloud-init (site + enroll token) the Add-probe
+# wizard emits.
+ssh_pwauth: true
+users:
+  - name: packer
+    lock_passwd: false
+    # password: "packer" (plaintext, build-only; the account is deleted before the image is sealed).
+    plain_text_passwd: packer
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    groups: [sudo]
+    shell: /bin/bash
