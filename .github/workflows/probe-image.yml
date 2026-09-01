@@ -171,6 +171,7 @@ jobs:
             PROBE_VERSION=${{ steps.ver.outputs.version }}-r${{ steps.plan.outputs.revision }}
           tags: ${{ steps.plan.outputs.tags }}
           labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.base.name=${{ env.BASE_IMAGE }}
             io.argus.zabbix.version=${{ steps.ver.outputs.version }}
             io.argus.probe.revision=${{ steps.plan.outputs.revision }}
