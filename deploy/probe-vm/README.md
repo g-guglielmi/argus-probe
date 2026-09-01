@@ -49,9 +49,9 @@ packer build argus-probe-vm.pkr.hcl        # -> output/argus-probe-vm.qcow2
 1. Import the disk: upload `argus-probe-vm.vhd` as a VDI (Xen Orchestra → Import, or
    `xe vdi-import`). Create a VM (1–2 vCPU, 2 GB RAM) and attach the VDI as its boot disk.
 2. Give it the enrollment inputs — either of:
-   - **cloud-init (zero-touch):** attach the seed ISO from Argus **Add probe → VM** as a CD/config
-     drive. The VM enrolls on first boot with no interaction. *(Add-probe VM output ships in the next
-     slice; until then, use the first-boot page.)*
+   - **cloud-init (zero-touch):** in Argus **Add probe → VM (cloud-init)**, copy the user-data and
+     paste it into Xen Orchestra's **Cloud Config** field when creating the VM (or drop it in a
+     NoCloud seed as user-data). The VM enrolls on first boot with no interaction.
    - **first-boot page:** boot without a seed, browse to `http://<vm-ip>/`, and paste the enrollment
      URL + token from the Add-probe wizard. The page disappears once the probe enrolls.
 3. The probe registers with Argus and appears on the **Probes** page.
@@ -61,8 +61,10 @@ is a later slice.
 
 ## Scope / not yet
 
-- **Add-probe "VM" output** (cloud-init user-data + downloadable NoCloud seed ISO) — next slice; for
-  now the first-boot page covers enrollment.
+- **Downloadable NoCloud seed ISO.** The Add-probe wizard emits copy-paste cloud-init user-data
+  (**VM (cloud-init)** tab), which covers XCP-NG/Xen Orchestra and any hypervisor with a cloud-init
+  field. A server-generated seed *ISO* download (for hypervisors without one) is an optional follow-up;
+  the first-boot page already covers that case.
 - **Fleet self-update for VM probes.** VM probes report their version and enroll like any probe, but
   the golden image doesn't yet self-update on the Argus fleet target (the container is systemd-managed
   here, not Docker-restart-managed, so the sister-container recreate path is bypassed). A
