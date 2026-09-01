@@ -25,6 +25,7 @@ The VM is a delivery wrapper around the same container — that's why they live 
 ## Images & releases
 
 - Container: `ghcr.io/g-guglielmi/argus-probe` (built by `.github/workflows/probe-image.yml`).
+- Container **revisions** are also cut as GitHub Releases `probe/v<zabbix>-r<n>`, tracking the Zabbix base version (decoupled from the app's semver).
 - Golden VM: GitHub Releases tagged `probe-vm/vX.Y.Z` (built by `.github/workflows/probe-vm.yml` on a
   `probe-vm/v*` tag or manual dispatch).
 
