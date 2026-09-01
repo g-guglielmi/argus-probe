@@ -1,0 +1,17 @@
+# Normalize line endings. Files executed on Linux MUST stay LF, or they break
+# (e.g. `#!/usr/bin/env bash\r: bad interpreter`).
+* text=auto
+*.png binary
+*.ico binary
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.go        text eol=lf
+*.py        text eol=lf
+*.service   text eol=lf
+*.cfg       text eol=lf
+*.hcl       text eol=lf
+deploy/probe-vm/build-seed/user-data text eol=lf
+deploy/probe-vm/build-seed/meta-data text eol=lf
+deploy/probe-vm/files/probe.env.example text eol=lf

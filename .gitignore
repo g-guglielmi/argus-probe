@@ -1,0 +1,33 @@
+# Secrets
+*.env
+!argus/.env.example
+argus/pki/out/
+deploy/pki/out/
+
+# Go
+argus/argus
+argus/**/*.test
+
+# Node / Vite
+argus/web/node_modules/
+argus/web/dist/*
+!argus/web/dist/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+
+# Local archives / transfer bundles
+*.zip
+
+# Private local crosswalk (real infra values) - never publish
+LOCAL-VALUES.md
+
+# Python bytecode
+__pycache__/
+*.pyc
