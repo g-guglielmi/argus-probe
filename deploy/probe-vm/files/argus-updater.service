@@ -1,0 +1,31 @@
+[Unit]
+Description=Argus updater sidecar (recreates the probe on Argus's command)
+Documentation=https://github.com/g-guglielmi/argus-updater
+Wants=network-online.target
+After=network-online.target docker.service argus-probe.service
+Requires=docker.service
+
+[Service]
+# The second container of the probe VM: the shared argus-updater image in probe-watch mode. It holds
+# the Docker socket (the proxy never does) and recreates the argus-probe container via the Engine API
+# when Argus signals an update - and updates ITSELF the same way. Enabled alongside argus-probe.service
+# at enrollment. Pin ARGUS_UPDATER_TAG in probe.env to hold an updater version instead of latest.
+Environment=ARGUS_UPDATER_TAG=latest
+Environment=ARGUS_UPDATER_IMAGE=ghcr.io/g-guglielmi/argus-updater
+EnvironmentFile=-/etc/argus-probe/probe.env
+TimeoutStartSec=0
+
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/bin/docker rm -f argus-updater
+ExecStartPre=/usr/bin/docker pull ${ARGUS_UPDATER_IMAGE}:${ARGUS_UPDATER_TAG}
+ExecStart=/usr/bin/docker run -d --name argus-updater --restart unless-stopped \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /var/lib/argus-probe:/probe:ro \
+  -e ARGUS_UPDATER_MODE=probe-watch \
+  -e ARGUS_PROXY_CONTAINER=argus-probe \
+  ${ARGUS_UPDATER_IMAGE}:${ARGUS_UPDATER_TAG}
+ExecStop=-/usr/bin/docker stop argus-updater
+
+[Install]
+WantedBy=multi-user.target

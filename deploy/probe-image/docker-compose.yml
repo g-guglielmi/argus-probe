@@ -1,10 +1,10 @@
-# Argus probe with opt-in, Argus-coordinated self-update.
+# Argus probe: two containers - the proxy plus the argus-updater sidecar.
 #
-# The proxy runs pinned to ${ARGUS_PROBE_TAG}; the shared argus-updater sidecar (probe-poll mode)
-# asks Argus for the fleet target version and, when it changes, rewrites ARGUS_PROBE_TAG in .env and
-# recreates the proxy. Argus is the control plane, the probe converges - central version control +
-# fleet visibility, no third-party updater like Watchtower, and the Docker socket is exposed only to
-# the sidecar.
+# The proxy is a pure reporter and never gets the Docker socket. The argus-updater sidecar
+# (probe-watch mode) holds the socket and recreates the proxy via the Docker Engine API when Argus
+# signals an update (a dashboard "Update now" or a fleet-target change), rolling back on failure.
+# Argus is the control plane; the proxy converges - central version control + fleet visibility, the
+# socket exposed only to the sidecar, and no third-party updater like Watchtower.
 #
 # Quick start (fill the .env values from the Argus "Add probe" wizard, Compose tab):
 #   ARGUS_PROXY_NAME=argus-proxy-<site>
@@ -14,7 +14,9 @@
 #   # ZBX_SERVER_HOST=<core-host:reachable-on-10051>   # only if Argus didn't bake one in
 # Then:  docker compose up -d
 #
-# Drop the `updater` service (or `docker compose up -d proxy`) to run the probe without self-update.
+# Argus is the version authority: the sidecar recreates the proxy to the fleet target. Leave
+# ARGUS_PROBE_TAG at latest (or match it to your Argus target) so a manual `docker compose up -d`
+# doesn't revert what Argus set. Drop the `updater` service to run the probe without self-update.
 
 name: argus-probe
 
@@ -26,7 +28,6 @@ services:
     environment:
       ARGUS_ENROLL_URL: ${ARGUS_ENROLL_URL:-}
       ARGUS_ENROLL_TOKEN: ${ARGUS_ENROLL_TOKEN:-}
-      ARGUS_PROBE_SELFUPDATE: "1"          # advertises "auto-update on" to Argus (the sidecar acts)
       ZBX_SERVER_HOST: ${ZBX_SERVER_HOST:-}
     volumes:
       # Bind mounts (not named volumes) so everything lives in ./data next to this file.
@@ -36,14 +37,14 @@ services:
       - ./data/snmptraps:/var/lib/zabbix/snmptraps
 
   updater:
-    # The shared self-update sidecar (its own version line, not the probe's). probe-poll mode polls
-    # Argus for the fleet target and recreates the proxy via compose when it changes.
+    # The shared self-update sidecar (its own version line, not the probe's). probe-watch mode holds
+    # the socket and recreates the proxy via the Engine API - no compose plugin, proxy stays clean.
     image: ghcr.io/g-guglielmi/argus-updater:${ARGUS_UPDATER_TAG:-latest}
     container_name: ${ARGUS_PROXY_NAME:-argus-proxy}-updater
     restart: unless-stopped
     environment:
-      ARGUS_UPDATER_MODE: probe-poll
+      ARGUS_UPDATER_MODE: probe-watch
+      ARGUS_PROXY_CONTAINER: ${ARGUS_PROXY_NAME:-argus-proxy}   # the proxy container to manage
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock   # opt-in: needed to recreate the proxy
-      - ./:/compose                                 # this project dir (compose file + .env)
+      - /var/run/docker.sock:/var/run/docker.sock   # the ONLY container with the socket
       - ./data:/probe:ro                            # read the proxy's check-in credential

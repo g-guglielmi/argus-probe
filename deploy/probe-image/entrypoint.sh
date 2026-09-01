@@ -102,50 +102,22 @@ export ZBX_TLSSERVERCERTSUBJECT="${ZBX_TLSSERVERCERTSUBJECT:-CN=zabbix-core}"
 # failure (older Argus, transient network) is ignored and retried next tick. The check-in
 # credential (PROBE_TOKEN / CHECKIN_URL) was resolved above.
 PROBE_VERSION="$(cat /etc/argus-probe.version 2>/dev/null || echo dev)"
-# Self-update is only real when the operator opted in AND the Docker socket is actually mounted;
-# report the capability accurately so the dashboard only offers "Update now" when we can act on it.
-SELFUPDATE=0
-if [ "${ARGUS_PROBE_SELFUPDATE:-0}" = "1" ] && [ -S /var/run/docker.sock ]; then SELFUPDATE=1; fi
-# The recreate helper is the shared argus-updater image (probe-recreate mode). Overridable so an
-# operator can pin/mirror it; defaults to the rolling tag.
-ARGUS_UPDATER_IMAGE="${ARGUS_UPDATER_IMAGE:-ghcr.io/g-guglielmi/argus-updater:latest}"
 
+# The proxy is a pure reporter: it reports its running version to Argus and reads the fleet target
+# for drift visibility, but it never touches Docker. Self-update is done by the separate
+# argus-updater sidecar (probe-watch mode), which holds the socket - so the proxy never does, and it
+# needs no docker-cli. The sidecar is what advertises self-update capability to Argus; we only report
+# our version (Argus keeps the stored capability flag when a check-in omits it).
 if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
-  echo "argus-probe: fleet check-in enabled -> $CHECKIN_URL (version $PROBE_VERSION, selfupdate=$SELFUPDATE)"
+  echo "argus-probe: fleet check-in enabled -> $CHECKIN_URL (version $PROBE_VERSION)"
   (
     # A short initial delay lets the proxy come up before the first report.
     sleep 20
     while true; do
-      # Report our authoritative version. Only assert self-update capability when WE hold the socket
-      # (socket-on-proxy model); otherwise omit the field entirely, so a socket-holding updater
-      # sidecar's capability report isn't clobbered and the sidecar - not us - receives the one-shot
-      # "Update now". Argus keeps the stored selfupdate flag when a check-in omits it.
-      if [ "$SELFUPDATE" = "1" ]; then
-        BODY=$(jq -nc --arg v "$PROBE_VERSION" '{version:$v, selfupdate:true}')
-      else
-        BODY=$(jq -nc --arg v "$PROBE_VERSION" '{version:$v}')
-      fi
-      RESP=$(curl -sS -m 15 \
+      curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
-        -d "$BODY" \
-        "$CHECKIN_URL" 2>/dev/null || echo '')
-      # A dashboard-requested self-update arrives as {"update":"<tag>"}. Converge by spawning the
-      # shared argus-updater image in probe-recreate mode (a --rm sister container - the proxy can't
-      # rm -f itself mid-update). The helper inspects THIS container to clone its config + repo, and
-      # swaps in the requested tag.
-      if [ "$SELFUPDATE" = "1" ]; then
-        UPDATE_TAG=$(printf '%s' "$RESP" | jq -r '.update // empty' 2>/dev/null || true)
-        if [ -n "$UPDATE_TAG" ]; then
-          SELF=$(cat /etc/hostname)
-          echo "argus-probe: self-update to $UPDATE_TAG requested - spawning argus-updater recreate helper"
-          docker run -d --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -e ARGUS_UPDATER_MODE=probe-recreate \
-            -e ARGUS_RECREATE_TARGET="$SELF" \
-            -e ARGUS_RECREATE_TAG="$UPDATE_TAG" \
-            "$ARGUS_UPDATER_IMAGE" >/dev/null 2>&1 || echo "argus-probe: could not spawn recreate helper" >&2
-        fi
-      fi
+        -d "$(jq -nc --arg v "$PROBE_VERSION" '{version:$v}')" \
+        "$CHECKIN_URL" >/dev/null 2>&1 || true
       sleep 300
     done
   ) &
