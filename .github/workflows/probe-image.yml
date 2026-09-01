@@ -93,7 +93,7 @@ jobs:
           set -euo pipefail
           # A push to this workflow can only be a deploy/probe-image/** change (paths filter above).
           WRAPPER=false
-          if [ "${{ github.event_name }}" = "push" ]; then WRAPPER=true; fi
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then WRAPPER=true; fi
           BASE_MOVED=false
           if [ "${{ steps.base.outputs.digest }}" != "${{ steps.last.outputs.digest }}" ]; then BASE_MOVED=true; fi
           echo "wrapper=$WRAPPER" >> "$GITHUB_OUTPUT"
