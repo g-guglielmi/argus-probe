@@ -116,9 +116,18 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
     # A short initial delay lets the proxy come up before the first report.
     sleep 20
     while true; do
+      # Report our authoritative version. Only assert self-update capability when WE hold the socket
+      # (socket-on-proxy model); otherwise omit the field entirely, so a socket-holding updater
+      # sidecar's capability report isn't clobbered and the sidecar - not us - receives the one-shot
+      # "Update now". Argus keeps the stored selfupdate flag when a check-in omits it.
+      if [ "$SELFUPDATE" = "1" ]; then
+        BODY=$(jq -nc --arg v "$PROBE_VERSION" '{version:$v, selfupdate:true}')
+      else
+        BODY=$(jq -nc --arg v "$PROBE_VERSION" '{version:$v}')
+      fi
       RESP=$(curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
-        -d "$(jq -nc --arg v "$PROBE_VERSION" --argjson su "$([ "$SELFUPDATE" = "1" ] && echo true || echo false)" '{version:$v, selfupdate:$su}')" \
+        -d "$BODY" \
         "$CHECKIN_URL" 2>/dev/null || echo '')
       # A dashboard-requested self-update arrives as {"update":"<tag>"}. Converge by spawning the
       # shared argus-updater image in probe-recreate mode (a --rm sister container - the proxy can't
