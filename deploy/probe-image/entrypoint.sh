@@ -8,15 +8,8 @@
 # because the enrollment token is single-use.
 set -eu
 
-# Role switch: opt-in helper roles run instead of the Zabbix proxy.
-#   updater  - long-running compose sidecar that polls the target and converges (needs the socket).
-#   recreate - short-lived, one-shot: recreate the proxy container on a new image, then exit.
-if [ "${ARGUS_PROBE_ROLE:-proxy}" = "updater" ]; then
-  exec /usr/local/bin/argus-updater.sh
-fi
-if [ "${ARGUS_PROBE_ROLE:-proxy}" = "recreate" ]; then
-  exec /usr/local/bin/argus-recreate.sh
-fi
+# Self-update helper roles (poll sidecar + one-shot recreate) no longer live in this image - they're
+# provided by the shared argus-updater image (ghcr.io/g-guglielmi/argus-updater), driven below.
 
 CERTS=/var/lib/zabbix/enroll
 CA="$CERTS/ca.crt"
@@ -113,6 +106,9 @@ PROBE_VERSION="$(cat /etc/argus-probe.version 2>/dev/null || echo dev)"
 # report the capability accurately so the dashboard only offers "Update now" when we can act on it.
 SELFUPDATE=0
 if [ "${ARGUS_PROBE_SELFUPDATE:-0}" = "1" ] && [ -S /var/run/docker.sock ]; then SELFUPDATE=1; fi
+# The recreate helper is the shared argus-updater image (probe-recreate mode). Overridable so an
+# operator can pin/mirror it; defaults to the rolling tag.
+ARGUS_UPDATER_IMAGE="${ARGUS_UPDATER_IMAGE:-ghcr.io/g-guglielmi/argus-updater:latest}"
 
 if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
   echo "argus-probe: fleet check-in enabled -> $CHECKIN_URL (version $PROBE_VERSION, selfupdate=$SELFUPDATE)"
@@ -125,21 +121,20 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
         -d "$(jq -nc --arg v "$PROBE_VERSION" --argjson su "$([ "$SELFUPDATE" = "1" ] && echo true || echo false)" '{version:$v, selfupdate:$su}')" \
         "$CHECKIN_URL" 2>/dev/null || echo '')
       # A dashboard-requested self-update arrives as {"update":"<tag>"}. Converge by spawning the
-      # short-lived recreate helper (a sister container - the proxy can't rm -f itself mid-update).
+      # shared argus-updater image in probe-recreate mode (a --rm sister container - the proxy can't
+      # rm -f itself mid-update). The helper inspects THIS container to clone its config + repo, and
+      # swaps in the requested tag.
       if [ "$SELFUPDATE" = "1" ]; then
         UPDATE_TAG=$(printf '%s' "$RESP" | jq -r '.update // empty' 2>/dev/null || true)
         if [ -n "$UPDATE_TAG" ]; then
           SELF=$(cat /etc/hostname)
-          SELF_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$SELF" 2>/dev/null || echo '')
-          if [ -n "$SELF_IMAGE" ]; then
-            echo "argus-probe: self-update to $UPDATE_TAG requested - spawning recreate helper"
-            docker run -d --rm \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              -e ARGUS_PROBE_ROLE=recreate \
-              -e ARGUS_RECREATE_TARGET="$SELF" \
-              -e ARGUS_RECREATE_TAG="$UPDATE_TAG" \
-              "$SELF_IMAGE" >/dev/null 2>&1 || echo "argus-probe: could not spawn recreate helper" >&2
-          fi
+          echo "argus-probe: self-update to $UPDATE_TAG requested - spawning argus-updater recreate helper"
+          docker run -d --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -e ARGUS_UPDATER_MODE=probe-recreate \
+            -e ARGUS_RECREATE_TARGET="$SELF" \
+            -e ARGUS_RECREATE_TAG="$UPDATE_TAG" \
+            "$ARGUS_UPDATER_IMAGE" >/dev/null 2>&1 || echo "argus-probe: could not spawn recreate helper" >&2
         fi
       fi
       sleep 300

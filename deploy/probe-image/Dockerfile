@@ -14,9 +14,11 @@
 FROM zabbix/zabbix-proxy-sqlite3:alpine-7.0-latest
 
 USER root
-# openssl/curl/jq: enrollment + check-in. docker-cli + compose plugin: used ONLY by the opt-in
-# updater sidecar (ARGUS_PROBE_ROLE=updater) to recreate the proxy; inert for the proxy role.
-RUN apk add --no-cache openssl curl jq docker-cli docker-cli-compose
+# openssl/curl/jq: enrollment + check-in. docker-cli: only to spawn the shared argus-updater image
+# (probe-recreate mode) as a --rm sister container when a dashboard self-update is requested and the
+# socket is mounted; inert otherwise. The recreate/compose logic itself lives in the argus-updater
+# image now, so this image no longer needs the compose plugin.
+RUN apk add --no-cache openssl curl jq docker-cli
 
 # Bake the image version (Zabbix version + our wrapper revision, e.g. "7.0.29-r1") so the running
 # probe can report it to Argus at check-in. Supplied by CI (probe-image.yml); "dev" for local builds.
@@ -26,9 +28,7 @@ LABEL io.argus.probe.version=$PROBE_VERSION
 LABEL org.opencontainers.image.source="https://github.com/g-guglielmi/argus-probe"
 
 COPY entrypoint.sh /usr/local/bin/argus-entrypoint.sh
-COPY updater.sh /usr/local/bin/argus-updater.sh
-COPY recreate.sh /usr/local/bin/argus-recreate.sh
-RUN chmod +x /usr/local/bin/argus-entrypoint.sh /usr/local/bin/argus-updater.sh /usr/local/bin/argus-recreate.sh
+RUN chmod +x /usr/local/bin/argus-entrypoint.sh
 
 # Run as root (like the stock image expects): the entrypoint prepares the fresh, root-owned
 # /var/lib/zabbix volume and chowns the enrolled certs, then hands off to the stock entrypoint,

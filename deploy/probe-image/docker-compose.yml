@@ -1,9 +1,10 @@
 # Argus probe with opt-in, Argus-coordinated self-update.
 #
-# The proxy runs pinned to ${ARGUS_PROBE_TAG}; the updater sidecar asks Argus for the fleet target
-# version and, when it changes, rewrites ARGUS_PROBE_TAG in .env and recreates the proxy. Argus is
-# the control plane, the probe converges - central version control + fleet visibility, no
-# third-party updater container, and the Docker socket is exposed only to the sidecar.
+# The proxy runs pinned to ${ARGUS_PROBE_TAG}; the shared argus-updater sidecar (probe-poll mode)
+# asks Argus for the fleet target version and, when it changes, rewrites ARGUS_PROBE_TAG in .env and
+# recreates the proxy. Argus is the control plane, the probe converges - central version control +
+# fleet visibility, no third-party updater like Watchtower, and the Docker socket is exposed only to
+# the sidecar.
 #
 # Quick start (fill the .env values from the Argus "Add probe" wizard, Compose tab):
 #   ARGUS_PROXY_NAME=argus-proxy-<site>
@@ -35,11 +36,13 @@ services:
       - ./data/snmptraps:/var/lib/zabbix/snmptraps
 
   updater:
-    image: ghcr.io/g-guglielmi/argus-probe:${ARGUS_PROBE_TAG:-latest}
+    # The shared self-update sidecar (its own version line, not the probe's). probe-poll mode polls
+    # Argus for the fleet target and recreates the proxy via compose when it changes.
+    image: ghcr.io/g-guglielmi/argus-updater:${ARGUS_UPDATER_TAG:-latest}
     container_name: ${ARGUS_PROXY_NAME:-argus-proxy}-updater
     restart: unless-stopped
     environment:
-      ARGUS_PROBE_ROLE: updater
+      ARGUS_UPDATER_MODE: probe-poll
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # opt-in: needed to recreate the proxy
       - ./:/compose                                 # this project dir (compose file + .env)
