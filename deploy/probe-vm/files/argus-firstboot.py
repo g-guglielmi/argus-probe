@@ -67,20 +67,27 @@ def sh(*args):
 
 
 def start_probe():
-    subprocess.run(["systemctl", "enable", "--now", PROBE_SERVICE], check=False)
+    # restart (not just start) so a corrected probe.env is picked up on a retry.
+    subprocess.run(["systemctl", "enable", PROBE_SERVICE], check=False)
+    subprocess.run(["systemctl", "restart", PROBE_SERVICE], check=False)
 
 
-def enroll_status():
+def enroll_status(since=None):
     """Derive enrollment progress from the probe container's log + cert output.
 
     Returns {state, detail?, name?} where state is one of:
       starting | enrolling | enrolled | failed
+    `since` (epoch) scopes the log to the current attempt, so a stale failure from a previous try
+    doesn't mask a fresh retry.
     """
     # Success is authoritative: the container writes proxy.crt + proxy.env once enrolled.
     if os.path.exists(CERT):
         return {"state": "enrolled", "name": read_kv(META).get("PROXY_NAME", "")}
 
-    log = sh("journalctl", "-u", PROBE_SERVICE, "-n", "60", "--no-pager", "-o", "cat")
+    args = ["journalctl", "-u", PROBE_SERVICE, "-n", "200", "--no-pager", "-o", "cat"]
+    if since:
+        args += ["--since", "@%d" % int(since)]
+    log = sh(*args)
     m = re.search(r"enrolled as (\S+)", log)
     if m:
         return {"state": "enrolled", "name": m.group(1)}
@@ -176,7 +183,7 @@ PROGRESS = """
       if (s.state === "failed") {
         steps.forEach(li => { if (!li.classList.contains("done")) { li.classList.add("fail"); li.querySelector(".ic").textContent = "✕"; } });
         res.className = "result bad";
-        res.innerHTML = "Enrollment failed: " + (s.detail || "unknown error") + '<br><a class="retry" href="/">Try again</a>';
+        res.innerHTML = "Enrollment failed: " + (s.detail || "unknown error") + '<br><a class="retry" href="/?edit=1">Change the URL or token and try again</a>';
         return;
       }
       const idx = ORDER.indexOf(s.state);
@@ -206,14 +213,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _form(self, error="", env=None):
+        env = env or {}
+        return page(FORM.format(error=error,
+                                url=html.escape(env.get("ARGUS_ENROLL_URL", "")),
+                                token=html.escape(env.get("ARGUS_ENROLL_TOKEN", "")),
+                                core=html.escape(env.get("ZBX_SERVER_HOST", ""))))
+
     def do_GET(self):
         if self.path.startswith("/status"):
-            self._send(json.dumps(enroll_status()), ctype="application/json")
+            self._send(json.dumps(enroll_status(self.server.attempt_since)), ctype="application/json")
+            return
+        if self.path.startswith("/?edit"):
+            # After a failure: stop the probe retrying the bad values and reopen the form, prefilled
+            # with what was entered so only the wrong field needs fixing.
+            subprocess.run(["systemctl", "stop", PROBE_SERVICE], check=False)
+            self.server.submitted = False
+            self._send(self._form(env=read_kv(ENV_PATH)))
             return
         if self.server.submitted or already_enrolled():
             self._send(page(PROGRESS))
             return
-        self._send(page(FORM.format(error="", url="", token="", core="")))
+        self._send(self._form())
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0) or 0)
@@ -223,10 +244,11 @@ class Handler(BaseHTTPRequestHandler):
         core = form.get("core_host", [""])[0].strip()
         if not url or not token:
             err = '<p class="err">Enrollment URL and token are both required.</p>'
-            self._send(page(FORM.format(error=err, url=html.escape(url), token=html.escape(token),
-                                        core=html.escape(core))), status=400)
+            self._send(self._form(error=err, env={"ARGUS_ENROLL_URL": url, "ARGUS_ENROLL_TOKEN": token,
+                                                  "ZBX_SERVER_HOST": core}), status=400)
             return
         write_env(url, token, core)
+        self.server.attempt_since = time.time()  # scope status polling to this attempt
         start_probe()
         self.server.submitted = True
         self._send(page(PROGRESS))
@@ -253,6 +275,7 @@ def main():
         subprocess.run(["systemctl", "disable", FIRSTBOOT_SERVICE], check=False)
         return 0
     httpd = ThreadingHTTPServer(LISTEN, Handler)
+    httpd.attempt_since = time.time()
     httpd.submitted = already_enrolled()  # a seed may have written the token already
     if httpd.submitted:
         start_probe()
