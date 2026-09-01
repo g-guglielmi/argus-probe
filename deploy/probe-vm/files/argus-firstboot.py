@@ -25,6 +25,7 @@ ENROLL_DIR = "/var/lib/argus-probe/enroll"
 CERT = os.path.join(ENROLL_DIR, "proxy.crt")
 META = os.path.join(ENROLL_DIR, "proxy.env")
 PROBE_SERVICE = "argus-probe.service"
+UPDATER_SERVICE = "argus-updater.service"
 FIRSTBOOT_SERVICE = "argus-firstboot.service"
 LISTEN = ("0.0.0.0", 80)
 
@@ -67,9 +68,12 @@ def sh(*args):
 
 
 def start_probe():
-    # restart (not just start) so a corrected probe.env is picked up on a retry.
-    subprocess.run(["systemctl", "enable", PROBE_SERVICE], check=False)
-    subprocess.run(["systemctl", "restart", PROBE_SERVICE], check=False)
+    # restart (not just start) so a corrected probe.env is picked up on a retry. The two containers -
+    # the proxy and the argus-updater sidecar - come up together (the updater keeps the proxy on the
+    # Argus fleet target and can update itself).
+    for svc in (PROBE_SERVICE, UPDATER_SERVICE):
+        subprocess.run(["systemctl", "enable", svc], check=False)
+        subprocess.run(["systemctl", "restart", svc], check=False)
 
 
 def enroll_status(since=None):
@@ -225,8 +229,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps(enroll_status(self.server.attempt_since)), ctype="application/json")
             return
         if self.path.startswith("/?edit"):
-            # After a failure: stop the probe retrying the bad values and reopen the form, prefilled
-            # with what was entered so only the wrong field needs fixing.
+            # After a failure: stop the probe (and its updater) retrying the bad values and reopen the
+            # form, prefilled with what was entered so only the wrong field needs fixing.
+            subprocess.run(["systemctl", "stop", UPDATER_SERVICE], check=False)
             subprocess.run(["systemctl", "stop", PROBE_SERVICE], check=False)
             self.server.submitted = False
             self._send(self._form(env=read_kv(ENV_PATH)))

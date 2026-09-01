@@ -14,11 +14,10 @@
 FROM zabbix/zabbix-proxy-sqlite3:alpine-7.0-latest
 
 USER root
-# openssl/curl/jq: enrollment + check-in. docker-cli: only to spawn the shared argus-updater image
-# (probe-recreate mode) as a --rm sister container when a dashboard self-update is requested and the
-# socket is mounted; inert otherwise. The recreate/compose logic itself lives in the argus-updater
-# image now, so this image no longer needs the compose plugin.
-RUN apk add --no-cache openssl curl jq docker-cli
+# openssl/curl/jq: enrollment + check-in only. The proxy is a pure reporter and never touches Docker
+# - all self-update work is done by the separate argus-updater sidecar (probe-watch mode), which
+# holds the socket - so this image needs no docker-cli.
+RUN apk add --no-cache openssl curl jq
 
 # Bake the image version (Zabbix version + our wrapper revision, e.g. "7.0.29-r1") so the running
 # probe can report it to Argus at check-in. Supplied by CI (probe-image.yml); "dev" for local builds.

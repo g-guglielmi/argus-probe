@@ -15,20 +15,23 @@ Environment=ARGUS_PROBE_TAG=latest
 Environment=ARGUS_PROBE_IMAGE=ghcr.io/g-guglielmi/argus-probe
 EnvironmentFile=/etc/argus-probe/probe.env
 TimeoutStartSec=0
-Restart=always
-RestartSec=10
 
-# Pull the target image, then run the stock probe in the foreground under systemd. The container
-# self-enrolls on first boot (key + CSR generated locally, single-use token redeemed) and persists its
-# certs to /var/lib/argus-probe, so a reboot skips enrollment.
+# Create the proxy as a DETACHED, Docker-restarted container (not a foreground `--rm`), so the
+# argus-updater sidecar can recreate it in place (rename + recreate via the Engine API) without
+# killing a systemd-owned foreground process. systemd just ensures the container exists at boot
+# (oneshot); Docker's `--restart unless-stopped` keeps it running; the updater drives version changes.
+# A `systemctl restart` (or reboot) re-pulls ${ARGUS_PROBE_TAG} - so pin a version in probe.env if you
+# don't want a reboot to converge the VM back on latest.
+Type=oneshot
+RemainAfterExit=yes
 ExecStartPre=-/usr/bin/docker rm -f argus-probe
 ExecStartPre=/usr/bin/docker pull ${ARGUS_PROBE_IMAGE}:${ARGUS_PROBE_TAG}
-ExecStart=/usr/bin/docker run --rm --name argus-probe \
+ExecStart=/usr/bin/docker run -d --name argus-probe --restart unless-stopped \
   -v /var/lib/argus-probe:/var/lib/zabbix \
   -v /var/lib/argus-probe/snmptraps:/var/lib/zabbix/snmptraps \
   --env-file /etc/argus-probe/probe.env \
   ${ARGUS_PROBE_IMAGE}:${ARGUS_PROBE_TAG}
-ExecStop=/usr/bin/docker stop argus-probe
+ExecStop=-/usr/bin/docker stop argus-probe
 
 [Install]
 WantedBy=multi-user.target

@@ -68,9 +68,10 @@ is a later slice.
   (**VM (cloud-init)** tab), which covers XCP-NG/Xen Orchestra and any hypervisor with a cloud-init
   field. A server-generated seed *ISO* download (for hypervisors without one) is an optional follow-up;
   the first-boot page already covers that case.
-- **Fleet self-update for VM probes.** VM probes report their version and enroll like any probe, but
-  the golden image doesn't yet self-update on the Argus fleet target (the container is systemd-managed
-  here, not Docker-restart-managed, so the sister-container recreate path is bypassed). A
-  systemd-timer updater that honors the fleet target is a follow-up. Updating today = `systemctl
-  restart argus-probe` (re-pulls the tag) or redeploy.
+- **Fleet self-update for VM probes.** The golden image runs **two** containers, installed as two
+  systemd units: `argus-probe` (the proxy, detached + Docker-restart-managed) and `argus-updater`
+  (the shared updater in `probe-watch` mode, holding the socket). Both come up together at enrollment.
+  Argus drives updates like any other probe - the updater recreates the proxy (and itself) via the
+  Engine API. A `systemctl restart argus-probe` (or a reboot) re-pulls `ARGUS_PROBE_TAG`, so pin it in
+  `/etc/argus-probe/probe.env` if you don't want a reboot to converge the VM back on latest.
 - **OVA (VMware/Nutanix)** and the **bare-metal Clonezilla SKU** — later §A slices.

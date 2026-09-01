@@ -23,6 +23,7 @@ systemctl enable docker
 echo "==> installing argus-probe units and files"
 FILES=/tmp/files
 install -D -m 0644 "$FILES/argus-probe.service"        /etc/systemd/system/argus-probe.service
+install -D -m 0644 "$FILES/argus-updater.service"      /etc/systemd/system/argus-updater.service
 install -D -m 0644 "$FILES/argus-firstboot.service"    /etc/systemd/system/argus-firstboot.service
 install -D -m 0755 "$FILES/argus-firstboot.py"         /usr/local/bin/argus-firstboot.py
 install -D -m 0644 "$FILES/90-argus-datasources.cfg"   /etc/cloud/cloud.cfg.d/90-argus-datasources.cfg
