@@ -34,7 +34,9 @@ so every deployed clone is unique and carries no shared credential.
 
 CI (`.github/workflows/probe-vm.yml`) builds it — `packer validate` on every change under this
 directory, and a full build on **workflow_dispatch** or a **`probe-vm/v*`** tag (which also publishes
-a GitHub Release with the image assets). Outputs: `argus-probe-vm.qcow2` and `argus-probe-vm.vhd`.
+a GitHub Release with the image assets). Outputs: `argus-probe-vm.qcow2` (~800 MB) and
+`argus-probe-vm.vhd` (~2 GB). The Release ships the VHD **gzipped** (`argus-probe-vm.vhd.gz`, GitHub's
+2 GiB asset cap); the raw VHD is available from the run's workflow artifacts.
 
 Locally (needs Packer + QEMU):
 
@@ -46,8 +48,9 @@ packer build argus-probe-vm.pkr.hcl        # -> output/argus-probe-vm.qcow2
 
 ## Deploying on XCP-NG
 
-1. Import the disk: upload `argus-probe-vm.vhd` as a VDI (Xen Orchestra → Import, or
-   `xe vdi-import`). Create a VM (1–2 vCPU, 2 GB RAM) and attach the VDI as its boot disk.
+1. Import the disk: `gunzip argus-probe-vm.vhd.gz` (Release asset), then upload the `.vhd` as a VDI
+   (Xen Orchestra → Import, or `xe vdi-import`). Create a VM (1–2 vCPU, 2 GB RAM) and attach the VDI
+   as its boot disk.
 2. Give it the enrollment inputs — either of:
    - **cloud-init (zero-touch):** in Argus **Add probe → VM (cloud-init)**, copy the user-data and
      paste it into Xen Orchestra's **Cloud Config** field when creating the VM (or drop it in a
