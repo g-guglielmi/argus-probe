@@ -38,10 +38,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install QEMU
+      - name: Install QEMU + ISO tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils
+          # xorriso builds the cloud-init "cidata" seed CD that Packer attaches for SSH bootstrap.
+          sudo apt-get install -y qemu-system-x86 qemu-utils xorriso
 
       - uses: hashicorp/setup-packer@main
 
