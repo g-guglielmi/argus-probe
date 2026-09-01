@@ -1,0 +1,17 @@
+[Unit]
+Description=Argus probe first-boot enrollment (fallback when no cloud-init token)
+Documentation=https://github.com/g-guglielmi/argus
+# Run after cloud-init has had its chance to drop /etc/argus-probe/probe.env. If cloud-init already
+# supplied a token, the script no-ops immediately; otherwise it serves a one-field setup page.
+Wants=network-online.target
+After=network-online.target cloud-final.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/bin/argus-firstboot.py
+# It self-disables once enrollment succeeds, so this only ever does real work on the very first boot.
+
+[Install]
+WantedBy=multi-user.target

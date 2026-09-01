@@ -1,0 +1,83 @@
+name: probe-vm
+
+# Golden image build for the self-configuring probe VM (§14a). Kept out of the main build workflow
+# because a full VM build under TCG is minutes-long - it runs only on demand (workflow_dispatch) or
+# when a `probe-vm/v*` tag is pushed (which also publishes a GitHub Release with the image assets).
+# Every push that touches deploy/probe-vm/ still gets a fast `packer validate` sanity check.
+
+on:
+  push:
+    branches: [main]
+    paths: ['deploy/probe-vm/**', '.github/workflows/probe-vm.yml']
+    tags: ['probe-vm/v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # publish the Release + upload image assets on a tag build
+
+defaults:
+  run:
+    working-directory: deploy/probe-vm
+
+jobs:
+  # Cheap gate on every touch: the template parses and its plugins resolve. No VM is built.
+  validate:
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-packer@main
+      - run: packer init argus-probe-vm.pkr.hcl
+      - run: packer validate argus-probe-vm.pkr.hcl
+
+  # Full build: only on manual dispatch or a probe-vm/v* tag.
+  build:
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils
+
+      - uses: hashicorp/setup-packer@main
+
+      - name: Build the golden image
+        run: |
+          packer init argus-probe-vm.pkr.hcl
+          PACKER_LOG=1 packer build argus-probe-vm.pkr.hcl
+
+      - name: Convert to VHD (XCP-NG / Hyper-V import)
+        run: |
+          qemu-img convert -f qcow2 -O vpc -o subformat=dynamic \
+            output/argus-probe-vm.qcow2 output/argus-probe-vm.vhd
+          ls -lh output/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: argus-probe-vm
+          path: |
+            deploy/probe-vm/output/argus-probe-vm.qcow2
+            deploy/probe-vm/output/argus-probe-vm.vhd
+          if-no-files-found: error
+
+      - name: Publish Release (tag builds only)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            deploy/probe-vm/output/argus-probe-vm.qcow2
+            deploy/probe-vm/output/argus-probe-vm.vhd
+          body: |
+            Argus probe golden image (${{ github.ref_name }}).
+
+            - `argus-probe-vm.qcow2` - KVM/libvirt, or convert as needed.
+            - `argus-probe-vm.vhd` - import into XCP-NG (as a VDI) or Hyper-V.
+
+            Deploy: create a VM from the disk, then either attach the cloud-init seed ISO from the
+            Argus **Add probe -> VM** output, or boot it and use the first-boot setup page. See
+            deploy/probe-vm/README.md.
