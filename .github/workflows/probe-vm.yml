@@ -71,9 +71,11 @@ jobs:
       # above for anyone who wants it un-gzipped).
       - name: Compress VHD for the Release
         if: github.ref_type == 'tag'
+        # run steps default to working-directory deploy/probe-vm, so paths are relative to it (uses:
+        # actions like upload/release are not, hence their deploy/probe-vm/ prefix).
         run: |
-          gzip -f deploy/probe-vm/output/argus-probe-vm.vhd
-          ls -lh deploy/probe-vm/output/
+          gzip -f output/argus-probe-vm.vhd
+          ls -lh output/
 
       - name: Publish Release (tag builds only)
         if: github.ref_type == 'tag'
