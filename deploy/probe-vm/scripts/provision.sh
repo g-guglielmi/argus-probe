@@ -33,6 +33,14 @@ install -d -m 0755 /var/lib/argus-probe
 # fallback IS enabled: it no-ops when cloud-init already supplied a token.
 systemctl enable argus-firstboot.service
 
+# DEBUG (temporary, remove once first-boot networking is confirmed): auto-log-in as root on the
+# console so an un-enrolled VM can be inspected via the hypervisor console. Cover the VGA console
+# (tty1, what Xen Orchestra shows) plus serial (ttyS0) and the Xen PV console (hvc0).
+for u in getty@tty1 serial-getty@ttyS0 serial-getty@hvc0; do
+  install -D -m 0644 "$FILES/autologin.conf" "/etc/systemd/system/$u.service.d/override.conf"
+done
+systemctl enable getty@tty1.service
+
 echo "==> pre-pulling the probe image (best-effort, so first boot doesn't wait on a big pull)"
 docker pull ghcr.io/g-guglielmi/argus-probe:latest || true
 
