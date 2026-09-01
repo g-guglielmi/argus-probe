@@ -23,6 +23,7 @@ RUN apk add --no-cache openssl curl jq docker-cli docker-cli-compose
 ARG PROBE_VERSION=dev
 RUN echo "$PROBE_VERSION" > /etc/argus-probe.version
 LABEL io.argus.probe.version=$PROBE_VERSION
+LABEL org.opencontainers.image.source="https://github.com/g-guglielmi/argus-probe"
 
 COPY entrypoint.sh /usr/local/bin/argus-entrypoint.sh
 COPY updater.sh /usr/local/bin/argus-updater.sh
