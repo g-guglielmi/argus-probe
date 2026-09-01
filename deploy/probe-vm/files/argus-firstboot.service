@@ -8,10 +8,12 @@ After=network-online.target cloud-final.service
 Requires=docker.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+# Long-running: it serves the setup + live status page until the probe enrols, then disables itself
+# (so it never runs again) and exits. On a boot where the probe is already enrolled it exits at once.
+Type=simple
 ExecStart=/usr/bin/python3 /usr/local/bin/argus-firstboot.py
-# It self-disables once enrollment succeeds, so this only ever does real work on the very first boot.
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
