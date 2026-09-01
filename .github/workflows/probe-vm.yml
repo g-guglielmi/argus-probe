@@ -66,19 +66,29 @@ jobs:
             deploy/probe-vm/output/argus-probe-vm.vhd
           if-no-files-found: error
 
+      # GitHub caps a Release asset at 2 GiB; the VHD is larger, and a Debian+Docker disk gzips to a
+      # fraction of its size. Compress it for the Release (the raw VHD stays in the workflow artifact
+      # above for anyone who wants it un-gzipped).
+      - name: Compress VHD for the Release
+        if: github.ref_type == 'tag'
+        run: |
+          gzip -f deploy/probe-vm/output/argus-probe-vm.vhd
+          ls -lh deploy/probe-vm/output/
+
       - name: Publish Release (tag builds only)
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: |
             deploy/probe-vm/output/argus-probe-vm.qcow2
-            deploy/probe-vm/output/argus-probe-vm.vhd
+            deploy/probe-vm/output/argus-probe-vm.vhd.gz
           body: |
             Argus probe golden image (${{ github.ref_name }}).
 
             - `argus-probe-vm.qcow2` - KVM/libvirt, or convert as needed.
-            - `argus-probe-vm.vhd` - import into XCP-NG (as a VDI) or Hyper-V.
+            - `argus-probe-vm.vhd.gz` - import into XCP-NG (as a VDI) or Hyper-V. **gunzip first:**
+              `gunzip argus-probe-vm.vhd.gz`.
 
-            Deploy: create a VM from the disk, then either attach the cloud-init seed ISO from the
-            Argus **Add probe -> VM** output, or boot it and use the first-boot setup page. See
-            deploy/probe-vm/README.md.
+            Deploy: create a VM from the disk, then either paste the cloud-init user-data from the
+            Argus **Add probe -> VM (cloud-init)** output, or boot it and use the first-boot setup
+            page. See deploy/probe-vm/README.md.
