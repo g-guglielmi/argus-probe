@@ -11,7 +11,8 @@ cloud-init status --wait || true
 export DEBIAN_FRONTEND=noninteractive
 echo "==> installing base packages"
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl python3
+# systemd-resolved is a separate package on Debian 13; needed so DHCP DNS works under networkd.
+apt-get install -y --no-install-recommends ca-certificates curl python3 systemd-resolved
 
 echo "==> installing Docker Engine"
 # Official convenience script: adds Docker's apt repo and installs docker-ce. Pinned enough for an
@@ -28,6 +29,12 @@ install -D -m 0644 "$FILES/90-argus-datasources.cfg"   /etc/cloud/cloud.cfg.d/90
 install -D -m 0600 "$FILES/probe.env.example"          /etc/argus-probe/probe.env.example
 install -d -m 0755 /var/lib/argus-probe
 
+# Networking: systemd-networkd DHCPs the primary NIC regardless of cloud-init (which Debian disables
+# when no datasource is attached). cloud-init is told not to manage networking so they never fight.
+install -D -m 0644 "$FILES/10-argus-dhcp.network"      /etc/systemd/network/10-argus-dhcp.network
+install -D -m 0644 "$FILES/91-argus-network.cfg"       /etc/cloud/cloud.cfg.d/91-argus-network.cfg
+systemctl enable systemd-networkd.service systemd-resolved.service
+
 # The probe unit is installed but NOT enabled - enrollment (cloud-init runcmd or the first-boot page)
 # enables it once probe.env carries a token, so an un-enrolled VM never crash-loops. The first-boot
 # fallback IS enabled: it no-ops when cloud-init already supplied a token.
@@ -43,6 +50,10 @@ systemctl enable getty@tty1.service
 
 echo "==> pre-pulling the probe image (best-effort, so first boot doesn't wait on a big pull)"
 docker pull ghcr.io/g-guglielmi/argus-probe:latest || true
+
+# Point resolv.conf at resolved's stub (done last: before this, the build's own DNS must keep working
+# for apt/docker; on the deployed VM systemd-resolved runs and populates the stub from DHCP).
+ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
 echo "==> trimming build artifacts"
 apt-get clean

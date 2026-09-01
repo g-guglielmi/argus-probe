@@ -1,0 +1,13 @@
+# DHCP the primary NIC via systemd-networkd, independent of cloud-init. Debian's cloud-init disables
+# itself when no datasource is attached (ds-identify), and this image otherwise leaves networking to
+# cloud-init - so without this the NIC never comes up on a plain DHCP network. Matches the usual
+# predictable names (enX0 on Xen, ens/enp elsewhere, eth* as a fallback).
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=yes
+
+[DHCPv4]
+# Use the DHCP-provided hostname if the server offers one.
+UseHostname=yes
