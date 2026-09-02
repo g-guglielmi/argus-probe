@@ -89,11 +89,18 @@ keyboard-layout picker):
 - **seed CD (zero-touch):** **Download seed ISO** and attach it as a CD/DVD when creating the VM. It's
   an Argus-owned ISO (label `ARGUSSEED`) read by the first-boot service, so it works on any hypervisor
   — no cloud-init needed. The VM enrols on first boot with no interaction.
-- **first-boot page:** boot with no seed, browse to `http://<vm-ip>/`, and paste the enrollment URL +
-  token from the wizard (and pick the keyboard layout). The page disappears once the probe enrols.
+- **first-boot page:** boot with no seed (needs DHCP to be reachable), browse to `http://<vm-ip>/`,
+  and paste the enrollment URL + token from the wizard (and pick the keyboard layout). The page
+  disappears once the probe enrols.
 
 The probe registers with Argus and appears on the **Probes** page; its break-glass console credential
 is revealed there (the **Console** button).
+
+**No DHCP?** Turn on **Static IP** in Add probe → VM and fill in the address / prefix / gateway / DNS
+before you download the seed ISO — they're baked into it, and the first-boot service applies them
+before enrollment, so the VM comes up on its fixed address with no interaction. (This is seed-only: the
+first-boot page can't collect it, since you'd need an IP to reach the page.) A VM stuck without network
+isn't enrolled yet, so it's recoverable the same way — attach a corrected seed and reboot.
 
 ## Scope / not yet
 
