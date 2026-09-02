@@ -121,6 +121,35 @@ def apply_keymap(km):
         pass
 
 
+def apply_static_net(env):
+    """If the seed carried static networking (sites with no DHCP), replace the DHCP networkd file with
+    a static one and re-apply, so the VM comes up on its fixed address and can enroll. Values are
+    validated by the server that built the seed; omitted -> the VM keeps DHCP."""
+    ip = (env.get("ARGUS_IP") or "").strip()  # CIDR, e.g. 10.0.0.50/24
+    if not ip:
+        return
+    lines = ["[Match]", "Name=en* eth*", "", "[Network]", "Address=%s" % ip]
+    gw = (env.get("ARGUS_GATEWAY") or "").strip()
+    if gw:
+        lines.append("Gateway=%s" % gw)
+    for d in re.split(r"[,\s]+", (env.get("ARGUS_DNS") or "").strip()):
+        if d:
+            lines.append("DNS=%s" % d)
+    try:
+        with open("/etc/systemd/network/10-argus-static.network", "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        # drop the DHCP file so networkd doesn't also DHCP the same NIC
+        try:
+            os.remove("/etc/systemd/network/10-argus-dhcp.network")
+        except FileNotFoundError:
+            pass
+        subprocess.run(["systemctl", "restart", "systemd-networkd.service"],
+                       check=False, timeout=20, capture_output=True)
+        print("argus-firstboot: applied static network %s" % ip)
+    except Exception:
+        pass
+
+
 def gen_password(n=20):
     alphabet = string.ascii_letters + string.digits  # unambiguous + easy to type at a console
     return "".join(secrets.choice(alphabet) for _ in range(n))
@@ -425,6 +454,7 @@ def main():
         if seed and seed.get("ARGUS_ENROLL_URL") and seed.get("ARGUS_ENROLL_TOKEN"):
             write_env(seed["ARGUS_ENROLL_URL"], seed["ARGUS_ENROLL_TOKEN"], seed.get("ZBX_SERVER_HOST", ""))
             apply_keymap(seed.get("ARGUS_KEYMAP", ""))
+            apply_static_net(seed)  # no-op unless the seed carried a static IP (no-DHCP sites)
             print("argus-firstboot: adopted enrollment inputs from the attached seed disk")
     httpd = ThreadingHTTPServer(LISTEN, Handler)
     httpd.attempt_since = time.time()
