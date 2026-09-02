@@ -1,9 +1,14 @@
-// Argus probe golden image (§14a). Builds on top of the official Debian 13 (trixie) genericcloud
+// Argus probe golden image (§14a). Builds on top of the official Debian 13 (trixie) "generic" cloud
 // qcow2 rather than a from-ISO preseed install: the cloud image boots in seconds under plain TCG
 // (GitHub runners have no KVM acceleration) and already ships cloud-init, so the result is the same
 // appliance with a far faster, more reliable CI build. A NoCloud seed CD gives Packer an SSH login;
 // provisioning installs Docker + the probe; the shutdown step strips machine identity and the build
 // user so every deployed clone is unique and carries no shared credential.
+//
+// "generic" (linux-image-amd64, full driver set), NOT "genericcloud" (linux-image-cloud-amd64,
+// virtio-only): the OVA delivery target has to boot on non-virtio hypervisors (VMware/VirtualBox
+// SCSI/SATA) and the first-boot seed CD needs isofs + a CD-ROM driver - both are trimmed out of the
+// cloud kernel. "generic" is a superset, so XCP-NG/KVM keep working; it is only marginally larger.
 
 packer {
   required_plugins {
@@ -16,8 +21,8 @@ packer {
 
 variable "debian_image_url" {
   type        = string
-  default     = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
-  description = "Base Debian cloud image (qcow2)."
+  default     = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
+  description = "Base Debian cloud image (qcow2) - the 'generic' (full-driver) variant, see the header note."
 }
 
 variable "debian_image_checksum" {
