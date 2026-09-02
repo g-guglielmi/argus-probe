@@ -25,11 +25,13 @@ echo "==> converting qcow2 -> stream-optimized VMDK (lsilogic SCSI)"
 # declared in the OVF below so strict importers (VMware) don't see a controller/disk mismatch.
 qemu-img convert -f qcow2 -O vmdk -o subformat=streamOptimized,adapter_type=lsilogic "$SRC" "$VMDK"
 
-# Virtual capacity (bytes) from the source; the archived file size from the produced VMDK. populatedSize
-# is optional and easy to get wrong (compressed vs used bytes), so it's omitted rather than guessed.
-CAPACITY=$(qemu-img info --output=json "$SRC" | grep -o '"virtual-size": *[0-9]*' | grep -o '[0-9]*' | head -n1)
+# Virtual capacity (bytes) = the disk's logical size, read from the VMDK's own geometry. Parse the
+# human-readable "virtual size: N GiB (<bytes> bytes)" line (exactly one parenthesised byte count) -
+# robust across qemu versions, unlike the JSON field order. The archived VMDK file size comes from stat.
+qemu-img info "$VMDK"
+CAPACITY=$(qemu-img info "$VMDK" | sed -n 's/.*(\([0-9][0-9]*\) bytes).*/\1/p' | head -n1)
 FILESIZE=$(stat -c%s "$VMDK")
-: "${CAPACITY:?could not read the source virtual size}"
+: "${CAPACITY:?could not read the disk virtual size}"
 
 echo "==> writing OVF descriptor (capacity=$CAPACITY bytes, vmdk=$FILESIZE bytes)"
 cat > "$OVF" <<OVF_EOF
