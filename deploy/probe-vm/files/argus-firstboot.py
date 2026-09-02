@@ -156,6 +156,7 @@ def apply_hostname():
     name = re.sub(r"[^a-z0-9-]", "-", read_kv(META).get("PROXY_NAME", "").strip().lower()).strip("-")
     if not name:
         return
+    name = "argus-" + name  # e.g. proxy-office -> argus-proxy-office
     try:
         current = open("/etc/hostname", encoding="utf-8").read().strip()
     except Exception:
