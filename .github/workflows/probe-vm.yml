@@ -8,9 +8,12 @@ name: probe-vm
 on:
   push:
     branches: [main]
-    paths: ['deploy/probe-vm/**', '.github/workflows/probe-vm.yml']
     tags: ['probe-vm/v*']
   workflow_dispatch:
+# Note: no `paths:` filter here - combining `paths` with `tags` under one push block suppresses tag
+# events (they carry no changed-path set), which stopped `probe-vm/v*` releases from building. The
+# validate job below is cheap, so running it on every main push is an acceptable trade for reliable
+# tag-triggered releases.
 
 permissions:
   contents: write   # publish the Release + upload image assets on a tag build
