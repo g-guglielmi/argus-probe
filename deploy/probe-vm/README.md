@@ -95,8 +95,9 @@ keyboard-layout picker):
   disappears once the probe enrols.
 
 The probe registers with Argus and appears on the **Probes** page; its break-glass console credential
-is revealed there (the **Console** button). On enrollment the VM also sets its **hostname** to the
-proxy name (e.g. `proxy-office`), matching the container's Zabbix hostname.
+is revealed there (the **Console** button). On enrollment the VM also sets its **hostname** to
+`argus-probe-<site>` (e.g. `argus-probe-office`) — the VM is the probe appliance; the container it runs
+is the Zabbix proxy (`proxy-<site>`).
 
 **No DHCP?** Turn on **Static IP** in Add probe → VM and fill in the address / prefix / gateway / DNS
 before you download the seed ISO — they're baked into it, and the first-boot service applies them
