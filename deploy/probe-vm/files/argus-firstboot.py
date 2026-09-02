@@ -156,7 +156,10 @@ def apply_hostname():
     name = re.sub(r"[^a-z0-9-]", "-", read_kv(META).get("PROXY_NAME", "").strip().lower()).strip("-")
     if not name:
         return
-    name = "argus-" + name  # e.g. proxy-site5 -> argus-proxy-site5
+    # The VM is the probe appliance (the container it runs is the Zabbix proxy), so name the host
+    # argus-probe-<site>: proxy-site5 -> argus-probe-site5.
+    site = name[len("proxy-"):] if name.startswith("proxy-") else name
+    name = "argus-probe-" + site
     try:
         current = open("/etc/hostname", encoding="utf-8").read().strip()
     except Exception:
