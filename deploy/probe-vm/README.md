@@ -46,7 +46,8 @@ machine-id, so clones stay unique.
 ## Break-glass console access
 
 The golden image ships with **no login**. On first boot the service generates a per-VM admin user
-**`argus`** (sudo) with a random password and reports it to Argus over the probe check-in channel;
+**`argus`** (in the `sudo` and `docker` groups, so it can run `docker` without sudo) with a random
+password and reports it to Argus over the probe check-in channel;
 Argus stores it **encrypted** and reveals it to admins on the **Probes** page (the **Console** button).
 Use it at the hypervisor console, or over SSH once you're on the site VPN (remote sites are
 outbound-only, so SSH isn't internet-reachable). The password is cached root-only on the VM and the
@@ -94,7 +95,8 @@ keyboard-layout picker):
   disappears once the probe enrols.
 
 The probe registers with Argus and appears on the **Probes** page; its break-glass console credential
-is revealed there (the **Console** button).
+is revealed there (the **Console** button). On enrollment the VM also sets its **hostname** to the
+proxy name (e.g. `proxy-office`), matching the container's Zabbix hostname.
 
 **No DHCP?** Turn on **Static IP** in Add probe → VM and fill in the address / prefix / gateway / DNS
 before you download the seed ISO — they're baked into it, and the first-boot service applies them

@@ -150,6 +150,22 @@ def apply_static_net(env):
         pass
 
 
+def apply_hostname():
+    """Set the VM hostname to the enrolled proxy name (matching the container's Zabbix hostname), once
+    enrollment has written PROXY_NAME to proxy.env. Idempotent + best-effort."""
+    name = re.sub(r"[^a-z0-9-]", "-", read_kv(META).get("PROXY_NAME", "").strip().lower()).strip("-")
+    if not name:
+        return
+    try:
+        current = open("/etc/hostname", encoding="utf-8").read().strip()
+    except Exception:
+        current = ""
+    if current == name:
+        return
+    subprocess.run(["hostnamectl", "set-hostname", name], check=False, timeout=10)
+    print("argus-firstboot: hostname set to %s" % name)
+
+
 def gen_password(n=20):
     alphabet = string.ascii_letters + string.digits  # unambiguous + easy to type at a console
     return "".join(secrets.choice(alphabet) for _ in range(n))
@@ -170,6 +186,9 @@ def ensure_break_glass():
     if not pw:
         pw = gen_password()
         subprocess.run(["useradd", "-m", "-s", "/bin/bash", "-G", "sudo", BG_USER], check=False)
+        # Also add it to the docker group so break-glass can run docker without sudo (best-effort - the
+        # group exists once Docker is installed). This grants no privilege it doesn't already have via sudo.
+        subprocess.run(["usermod", "-aG", "docker", BG_USER], check=False)
         subprocess.run(["chpasswd"], input="%s:%s" % (BG_USER, pw), text=True, check=False)
         old = os.umask(0o077)
         try:
@@ -432,6 +451,7 @@ def monitor(httpd):
     while True:
         time.sleep(3)
         if os.path.exists(CERT):
+            apply_hostname()
             ensure_break_glass()
             time.sleep(15)
             if os.path.exists(BG_DONE):
@@ -443,6 +463,7 @@ def monitor(httpd):
 def main():
     if already_enrolled() and os.path.exists(CERT):
         start_probe()
+        apply_hostname()
         ensure_break_glass()  # retry the report if a prior boot couldn't reach Argus
         if os.path.exists(BG_DONE):
             subprocess.run(["systemctl", "disable", FIRSTBOOT_SERVICE], check=False)
