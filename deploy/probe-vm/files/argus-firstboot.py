@@ -14,9 +14,12 @@ import html
 import json
 import os
 import re
+import secrets
+import string
 import subprocess
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
@@ -37,6 +40,14 @@ LISTEN = ("0.0.0.0", 80)
 SEED_LABEL = "ARGUSSEED"
 SEED_ENV = "argus.env"
 SEED_MOUNT = "/run/argus-seed"
+
+# Break-glass console access: a per-VM admin user with a generated password, reported to Argus at
+# enrollment (stored encrypted there, revealed to admins) so an operator can reach the VM through the
+# hypervisor console (or SSH over the VPN) if something goes wrong. The password is set on the local
+# user and cached root-only so a failed report can retry without changing it.
+BG_USER = "argus"
+BG_SECRET_FILE = "/var/lib/argus-probe/break-glass.secret"
+BG_DONE = "/var/lib/argus-probe/break-glass.reported"
 
 
 def read_kv(path):
@@ -92,6 +103,69 @@ def read_seed_disk():
         return None
     finally:
         subprocess.run(["umount", SEED_MOUNT], check=False)
+
+
+def apply_keymap(km):
+    """Set the console keyboard layout (the hypervisor console + break-glass login use it). Writes
+    /etc/vconsole.conf and reloads systemd-vconsole-setup. Best-effort + validated - a bad/unknown
+    layout just leaves the default (us) in place."""
+    km = (km or "").strip().lower()
+    if not re.fullmatch(r"[a-z][a-z0-9-]{1,15}", km):
+        return
+    try:
+        with open("/etc/vconsole.conf", "w", encoding="utf-8") as fh:
+            fh.write("KEYMAP=%s\n" % km)
+        subprocess.run(["systemctl", "restart", "systemd-vconsole-setup.service"],
+                       check=False, timeout=15, capture_output=True)
+    except Exception:
+        pass
+
+
+def gen_password(n=20):
+    alphabet = string.ascii_letters + string.digits  # unambiguous + easy to type at a console
+    return "".join(secrets.choice(alphabet) for _ in range(n))
+
+
+def ensure_break_glass():
+    """Once the probe is enrolled: create the break-glass admin user with a generated password and
+    report it to Argus using the probe's check-in credential. Idempotent - the password is cached
+    root-only and the report is retried on later boots until it succeeds (BG_DONE marks success)."""
+    if os.path.exists(BG_DONE):
+        return
+    pw = ""
+    if os.path.exists(BG_SECRET_FILE):
+        try:
+            pw = open(BG_SECRET_FILE, encoding="utf-8").read().strip()
+        except Exception:
+            pw = ""
+    if not pw:
+        pw = gen_password()
+        subprocess.run(["useradd", "-m", "-s", "/bin/bash", "-G", "sudo", BG_USER], check=False)
+        subprocess.run(["chpasswd"], input="%s:%s" % (BG_USER, pw), text=True, check=False)
+        old = os.umask(0o077)
+        try:
+            with open(BG_SECRET_FILE, "w", encoding="utf-8") as fh:
+                fh.write(pw + "\n")
+        finally:
+            os.umask(old)
+    # Report it to Argus with the probe token from proxy.env (same credential the sidecar checks in
+    # with). checkin URL .../api/probes/checkin -> the break-glass endpoint .../api/probes/break-glass.
+    env = read_kv(META)
+    token, checkin = env.get("PROBE_TOKEN", ""), env.get("CHECKIN_URL", "")
+    if not token or not checkin:
+        return  # not reportable yet - retry on the next boot
+    url = checkin.rsplit("/", 1)[0] + "/break-glass"
+    body = json.dumps({"username": BG_USER, "password": pw}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Authorization": "Bearer " + token,
+                                          "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status == 200:
+                open(BG_DONE, "w", encoding="utf-8").close()
+                print("argus-firstboot: break-glass credential reported to Argus")
+    except Exception:
+        pass  # retry next boot
 
 
 def write_env(enroll_url, enroll_token, core_host):
@@ -171,6 +245,8 @@ STYLE = """
   input { width: 100%; padding: .6rem .7rem; font-size: .95rem; color: #e6e9ef; background: #0e1217;
     border: 1px solid #2b333d; border-radius: 8px; }
   input:focus { outline: none; border-color: #2ea8c9; box-shadow: 0 0 0 3px rgba(46,168,201,.2); }
+  select { width: 100%; padding: .6rem .7rem; font-size: .95rem; color: #e6e9ef; background: #0e1217;
+    border: 1px solid #2b333d; border-radius: 8px; }
   .sub { color: #6b7482; font-size: .78rem; margin-top: .3rem; }
   button { margin-top: 1.5rem; width: 100%; padding: .7rem 1rem; font-size: .95rem; font-weight: 600;
     color: #04121a; background: #2ea8c9; border: none; border-radius: 8px; cursor: pointer; }
@@ -210,6 +286,17 @@ FORM = """
     <label for="c">Core host <span style="color:#6b7482;font-weight:400">(optional)</span></label>
     <input id="c" name="core_host" placeholder="usually leave blank" value="{core}">
     <div class="sub">Leave blank — Argus fills this in. Only set it if the probe can't reach the server after enrolling.</div>
+    <label for="k">Console keyboard layout</label>
+    <select id="k" name="keymap">
+      <option value="us">US English</option>
+      <option value="uk">UK English</option>
+      <option value="it">Italian</option>
+      <option value="de">German</option>
+      <option value="fr">French</option>
+      <option value="es">Spanish</option>
+      <option value="pt-latin1">Portuguese</option>
+    </select>
+    <div class="sub">For this VM's console and the break-glass admin login.</div>
     <button type="submit">Enrol probe</button>
   </form>
 """
@@ -299,6 +386,7 @@ class Handler(BaseHTTPRequestHandler):
                                                   "ZBX_SERVER_HOST": core}), status=400)
             return
         write_env(url, token, core)
+        apply_keymap(form.get("keymap", ["us"])[0])
         self.server.attempt_since = time.time()  # scope status polling to this attempt
         start_probe()
         self.server.submitted = True
@@ -309,13 +397,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def monitor(httpd):
-    """Once the probe is enrolled, keep serving briefly (so the page shows success), then disable this
-    service for future boots and stop."""
+    """Once the probe is enrolled: generate + report the break-glass credential, keep serving briefly
+    (so the page shows success), then stop. The service is only disabled once the credential has been
+    reported (BG_DONE) - otherwise it stays enabled so a later boot retries the report."""
     while True:
         time.sleep(3)
         if os.path.exists(CERT):
-            time.sleep(20)
-            subprocess.run(["systemctl", "disable", FIRSTBOOT_SERVICE], check=False)
+            ensure_break_glass()
+            time.sleep(15)
+            if os.path.exists(BG_DONE):
+                subprocess.run(["systemctl", "disable", FIRSTBOOT_SERVICE], check=False)
             httpd.shutdown()
             return
 
@@ -323,14 +414,17 @@ def monitor(httpd):
 def main():
     if already_enrolled() and os.path.exists(CERT):
         start_probe()
-        subprocess.run(["systemctl", "disable", FIRSTBOOT_SERVICE], check=False)
+        ensure_break_glass()  # retry the report if a prior boot couldn't reach Argus
+        if os.path.exists(BG_DONE):
+            subprocess.run(["systemctl", "disable", FIRSTBOOT_SERVICE], check=False)
         return 0
-    # Zero-touch via an attached seed CD (no cloud-init needed): if one is present and cloud-init
-    # hasn't already written a token, adopt its enrollment inputs so this boot enrolls automatically.
+    # Zero-touch via an attached seed CD (no cloud-init needed): if one is present and no token has
+    # been written yet, adopt its enrollment inputs (and keyboard layout) so this boot enrolls itself.
     if not already_enrolled():
         seed = read_seed_disk()
         if seed and seed.get("ARGUS_ENROLL_URL") and seed.get("ARGUS_ENROLL_TOKEN"):
             write_env(seed["ARGUS_ENROLL_URL"], seed["ARGUS_ENROLL_TOKEN"], seed.get("ZBX_SERVER_HOST", ""))
+            apply_keymap(seed.get("ARGUS_KEYMAP", ""))
             print("argus-firstboot: adopted enrollment inputs from the attached seed disk")
     httpd = ThreadingHTTPServer(LISTEN, Handler)
     httpd.attempt_since = time.time()

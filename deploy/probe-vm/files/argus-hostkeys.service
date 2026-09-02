@@ -1,0 +1,17 @@
+[Unit]
+Description=Argus probe: regenerate SSH host keys on first boot
+Documentation=https://github.com/g-guglielmi/argus
+# The golden image ships with NO SSH host keys - Packer strips them so every deployed clone is unique.
+# cloud-init used to regenerate them on first boot; with cloud-init removed we do it ourselves, before
+# sshd starts, so break-glass SSH works. Runs once (the keys then exist, so the condition fails).
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+Before=ssh.service ssh.socket
+Wants=ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
