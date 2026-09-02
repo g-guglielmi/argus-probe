@@ -43,7 +43,7 @@ variable "vm_name" {
 
 variable "disk_size" {
   type    = string
-  default = "8G"
+  default = "30G"
 }
 
 source "qemu" "argus-probe" {
@@ -75,9 +75,10 @@ source "qemu" "argus-probe" {
 
   // Strip identity and the build user in a single SSH command, then power off. Doing the ssh-host-key
   // and machine-id removal here (not in provision.sh) keeps the live build session alive - a new SSH
-  // connection would fail once the host keys are gone. Order: clean, wipe identity, drop the build
-  // user, shut down.
-  shutdown_command = "sudo bash -c 'cloud-init clean --logs --seed; rm -f /etc/ssh/ssh_host_* /etc/machine-id /var/lib/dbus/machine-id; touch /etc/machine-id; userdel -f -r packer 2>/dev/null || true; shutdown -P now'"
+  // connection would fail once the host keys are gone. (provision.sh already purged cloud-init and its
+  // state, so there's no `cloud-init clean` to run here.) Order: wipe identity, drop the build user,
+  // shut down. The first-boot service regenerates SSH host keys; systemd regenerates the machine-id.
+  shutdown_command = "sudo bash -c 'rm -f /etc/ssh/ssh_host_* /etc/machine-id /var/lib/dbus/machine-id; touch /etc/machine-id; userdel -f -r packer 2>/dev/null || true; shutdown -P now'"
   shutdown_timeout = "5m"
 }
 

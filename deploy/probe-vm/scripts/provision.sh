@@ -11,8 +11,9 @@ cloud-init status --wait || true
 export DEBIAN_FRONTEND=noninteractive
 echo "==> installing base packages"
 apt-get update
-# systemd-resolved is a separate package on Debian 13; needed so DHCP DNS works under networkd.
-apt-get install -y --no-install-recommends ca-certificates curl python3 systemd-resolved
+# systemd-resolved: DHCP DNS under networkd. kbd: console keymaps + loadkeys (configurable keyboard
+# layout). sudo + openssh-server: break-glass admin access (per-VM user, console + SSH over the VPN).
+apt-get install -y --no-install-recommends ca-certificates curl python3 systemd-resolved kbd sudo openssh-server
 
 echo "==> installing Docker Engine"
 # Official convenience script: adds Docker's apt repo and installs docker-ce. Pinned enough for an
@@ -25,21 +26,21 @@ FILES=/tmp/files
 install -D -m 0644 "$FILES/argus-probe.service"        /etc/systemd/system/argus-probe.service
 install -D -m 0644 "$FILES/argus-updater.service"      /etc/systemd/system/argus-updater.service
 install -D -m 0644 "$FILES/argus-firstboot.service"    /etc/systemd/system/argus-firstboot.service
+install -D -m 0644 "$FILES/argus-hostkeys.service"     /etc/systemd/system/argus-hostkeys.service
 install -D -m 0755 "$FILES/argus-firstboot.py"         /usr/local/bin/argus-firstboot.py
-install -D -m 0644 "$FILES/90-argus-datasources.cfg"   /etc/cloud/cloud.cfg.d/90-argus-datasources.cfg
 install -D -m 0600 "$FILES/probe.env.example"          /etc/argus-probe/probe.env.example
 install -d -m 0755 /var/lib/argus-probe
 
-# Networking: systemd-networkd DHCPs the primary NIC regardless of cloud-init (which Debian disables
-# when no datasource is attached). cloud-init is told not to manage networking so they never fight.
+# Networking: systemd-networkd DHCPs the primary NIC. cloud-init is purged below, so networkd is the
+# sole network manager - no datasource dependency, no fight over the interface.
 install -D -m 0644 "$FILES/10-argus-dhcp.network"      /etc/systemd/network/10-argus-dhcp.network
-install -D -m 0644 "$FILES/91-argus-network.cfg"       /etc/cloud/cloud.cfg.d/91-argus-network.cfg
 systemctl enable systemd-networkd.service systemd-resolved.service
 
-# The probe unit is installed but NOT enabled - enrollment (cloud-init runcmd or the first-boot page)
+# The probe unit is installed but NOT enabled - enrollment (the seed disk or the first-boot page)
 # enables it once probe.env carries a token, so an un-enrolled VM never crash-loops. The first-boot
-# fallback IS enabled: it no-ops when cloud-init already supplied a token.
+# service IS enabled (it drives enrollment + break-glass), as is the SSH host-key regen oneshot.
 systemctl enable argus-firstboot.service
+systemctl enable argus-hostkeys.service
 
 echo "==> pre-pulling the probe image (best-effort, so first boot doesn't wait on a big pull)"
 docker pull ghcr.io/g-guglielmi/argus-probe:latest || true
@@ -48,7 +49,17 @@ docker pull ghcr.io/g-guglielmi/argus-probe:latest || true
 # for apt/docker; on the deployed VM systemd-resolved runs and populates the stub from DHCP).
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
+# Drop cloud-init entirely. It has finished its build-time job (it created the packer user and grew
+# the root filesystem to fill the disk on the build's first boot); the deployed appliance uses
+# systemd-networkd for networking and the first-boot service (seed disk / setup page) for enrollment,
+# so cloud-init is only a flaky, confusing extra on the no-datasource path. Purge it and its state so
+# no clone ever runs it. (Because it's gone, the Packer shutdown step no longer runs `cloud-init clean`.)
+echo "==> removing cloud-init (the appliance self-configures without it)"
+apt-get purge -y cloud-init || true
+rm -rf /etc/cloud /var/lib/cloud
+
 echo "==> trimming build artifacts"
+apt-get autoremove -y || true
 apt-get clean
 rm -rf "$FILES" /var/lib/apt/lists/*
 echo "==> provision complete"

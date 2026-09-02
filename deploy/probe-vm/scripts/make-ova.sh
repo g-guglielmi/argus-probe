@@ -16,7 +16,7 @@ OVF="$OUTDIR/$NAME.ovf"
 OVA="$OUTDIR/$NAME.ova"
 
 CPUS=2
-MEM_MB=2048
+MEM_MB=4096
 
 mkdir -p "$OUTDIR"
 
