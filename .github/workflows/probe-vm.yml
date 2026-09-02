@@ -44,8 +44,9 @@ jobs:
       - name: Install QEMU + ISO tooling
         run: |
           sudo apt-get update
-          # xorriso builds the cloud-init "cidata" seed CD that Packer attaches for SSH bootstrap.
-          sudo apt-get install -y qemu-system-x86 qemu-utils xorriso
+          # xorriso builds the cloud-init "cidata" seed CD that Packer attaches for SSH bootstrap;
+          # libxml2-utils provides xmllint to validate the generated OVF descriptor.
+          sudo apt-get install -y qemu-system-x86 qemu-utils xorriso libxml2-utils
 
       - uses: hashicorp/setup-packer@main
 
@@ -60,6 +61,11 @@ jobs:
             output/argus-probe-vm.qcow2 output/argus-probe-vm.vhd
           ls -lh output/
 
+      - name: Package as OVA (VMware / Nutanix / VirtualBox / Xen Orchestra)
+        # Stream-optimized VMDK + a hand-written OVF, tarred into a single .ova. The compressed VMDK
+        # keeps the OVA well under GitHub's 2 GiB Release-asset cap, so it ships un-gzipped.
+        run: bash scripts/make-ova.sh output/argus-probe-vm.qcow2 output
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -67,6 +73,7 @@ jobs:
           path: |
             deploy/probe-vm/output/argus-probe-vm.qcow2
             deploy/probe-vm/output/argus-probe-vm.vhd
+            deploy/probe-vm/output/argus-probe-vm.ova
           if-no-files-found: error
 
       # GitHub caps a Release asset at 2 GiB; the VHD is larger, and a Debian+Docker disk gzips to a
@@ -85,15 +92,19 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            deploy/probe-vm/output/argus-probe-vm.ova
             deploy/probe-vm/output/argus-probe-vm.qcow2
             deploy/probe-vm/output/argus-probe-vm.vhd.gz
           body: |
             Argus probe golden image (${{ github.ref_name }}).
 
+            - `argus-probe-vm.ova` - VMware / Nutanix / VirtualBox, and importable by Xen Orchestra
+              (**Import → OVA**) as a ready-to-run VM.
             - `argus-probe-vm.qcow2` - KVM/libvirt, or convert as needed.
             - `argus-probe-vm.vhd.gz` - import into XCP-NG (as a VDI) or Hyper-V. **gunzip first:**
               `gunzip argus-probe-vm.vhd.gz`.
 
-            Deploy: create a VM from the disk, then either paste the cloud-init user-data from the
-            Argus **Add probe -> VM (cloud-init)** output, or boot it and use the first-boot setup
-            page. See deploy/probe-vm/README.md.
+            Deploy: create/import a VM from the disk, then give it the enrollment inputs one of three
+            ways from **Add probe → VM (cloud-init)**: paste the cloud-init user-data, attach the
+            **Download seed ISO** as a CD, or boot it and use the first-boot setup page. See
+            deploy/probe-vm/README.md.

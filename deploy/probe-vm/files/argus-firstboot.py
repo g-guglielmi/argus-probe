@@ -29,6 +29,15 @@ UPDATER_SERVICE = "argus-updater.service"
 FIRSTBOOT_SERVICE = "argus-firstboot.service"
 LISTEN = ("0.0.0.0", 80)
 
+# Argus seed CD (the "Download seed ISO" from Add probe): a plain ISO9660 with volume label ARGUSSEED
+# holding a single KEY=VALUE file ARGUS.ENV. It is deliberately NOT a cloud-init NoCloud seed (that
+# would need Joliet/Rock-Ridge to keep the user-data/meta-data names) - reading it ourselves sidesteps
+# cloud-init's NoCloud datasource, which is fiddly on XCP-NG. Names are matched case-insensitively
+# because plain ISO9660 may surface them uppercased and with a ";1" version suffix.
+SEED_LABEL = "ARGUSSEED"
+SEED_ENV = "argus.env"
+SEED_MOUNT = "/run/argus-seed"
+
 
 def read_kv(path):
     out = {}
@@ -46,6 +55,43 @@ def read_kv(path):
 
 def already_enrolled():
     return bool(read_kv(ENV_PATH).get("ARGUS_ENROLL_TOKEN"))
+
+
+def find_seed_device():
+    """Return the /dev path of an attached Argus seed disk (FS label ARGUSSEED), or None."""
+    for line in sh("blkid").splitlines():
+        m = re.match(r"^(\S+?):", line)
+        lab = re.search(r'LABEL="([^"]*)"', line)
+        if m and lab and lab.group(1).strip().upper() == SEED_LABEL:
+            return m.group(1)
+    return None
+
+
+def read_seed_disk():
+    """If an Argus seed CD/disk is attached, mount it read-only and read ARGUS.ENV. Returns the parsed
+    KEY=VALUE dict (needs at least a token) or None. Best-effort - any failure just falls through to
+    the setup page."""
+    dev = find_seed_device()
+    if not dev:
+        return None
+    os.makedirs(SEED_MOUNT, exist_ok=True)
+    try:
+        r = subprocess.run(["mount", "-o", "ro", dev, SEED_MOUNT], capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            return None
+        envfile = None
+        for fn in os.listdir(SEED_MOUNT):
+            if fn.split(";", 1)[0].lower() == SEED_ENV:  # tolerate ARGUS.ENV / argus.env / argus.env;1
+                envfile = os.path.join(SEED_MOUNT, fn)
+                break
+        if not envfile:
+            return None
+        kv = read_kv(envfile)
+        return kv if kv.get("ARGUS_ENROLL_TOKEN") else None
+    except Exception:
+        return None
+    finally:
+        subprocess.run(["umount", SEED_MOUNT], check=False)
 
 
 def write_env(enroll_url, enroll_token, core_host):
@@ -279,6 +325,13 @@ def main():
         start_probe()
         subprocess.run(["systemctl", "disable", FIRSTBOOT_SERVICE], check=False)
         return 0
+    # Zero-touch via an attached seed CD (no cloud-init needed): if one is present and cloud-init
+    # hasn't already written a token, adopt its enrollment inputs so this boot enrolls automatically.
+    if not already_enrolled():
+        seed = read_seed_disk()
+        if seed and seed.get("ARGUS_ENROLL_URL") and seed.get("ARGUS_ENROLL_TOKEN"):
+            write_env(seed["ARGUS_ENROLL_URL"], seed["ARGUS_ENROLL_TOKEN"], seed.get("ZBX_SERVER_HOST", ""))
+            print("argus-firstboot: adopted enrollment inputs from the attached seed disk")
     httpd = ThreadingHTTPServer(LISTEN, Handler)
     httpd.attempt_since = time.time()
     httpd.submitted = already_enrolled()  # a seed may have written the token already
