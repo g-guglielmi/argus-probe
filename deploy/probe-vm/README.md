@@ -20,6 +20,7 @@ The private key never leaves the VM; the token is single-use, so keep the disk p
 | `files/argus-probe.service` | systemd unit that runs the probe container from `/etc/argus-probe/probe.env`. |
 | `files/argus-firstboot.service` + `argus-firstboot.py` | First-boot enrollment: adopts an attached **seed CD** (label `ARGUSSEED`) if present, else serves a setup page; also sets the console keyboard layout and generates + reports the **break-glass** credential. No-ops once enrolled + reported. |
 | `files/argus-hostkeys.service` | Regenerates SSH host keys on first boot (they're stripped from the golden image; cloud-init used to do this). |
+| `files/argus-os-report.py` + `argus-os-report.service`/`.timer` | Hourly OS patch reporter: posts the VM's security-update count + reboot-required flag to Argus (DESIGN §14c). No-ops until enrolled. |
 | `files/probe.env.example` | Reference for the `probe.env` / seed-disk `ARGUS.ENV` contract. |
 
 ## Design note — built from the Debian cloud image, not a preseed install
@@ -56,6 +57,23 @@ report is retried until it lands, so a brief core outage during enrollment doesn
 The **console keyboard layout** is configurable per-VM (it matters for typing that password at the
 console): pick it in Add-probe → **VM**, or on the first-boot setup page. It's written to
 `/etc/vconsole.conf` on first boot; the default is `us`.
+
+## OS patching & lifecycle
+
+The image keeps its Debian OS patched with no operator action (DESIGN §14c). It's **cattle**: both the
+patch and the reboot are hands-off.
+
+- **`unattended-upgrades`** applies the **security suite only**, automatically. `needrestart` restarts
+  affected services after a libc/openssl bump, so most updates need no reboot at all.
+- When a reboot *is* required, the VM reboots itself in a **weekly ~03:00 window**
+  (`Automatic-Reboot-Time`). Probes buffer 7 days offline, so a ~60 s reboot is invisible.
+- **`argus-os-report.timer`** posts the VM's pending **security-update count** and **reboot-required**
+  flag to Argus hourly (`POST /api/probes/os-status`, probe-token auth), so the **Probes** page's **OS**
+  column shows which sites carry CVEs or are waiting on their reboot window. It only *reports* — Argus
+  never runs `apt` remotely (no clean rollback); the hypervisor snapshot is the safety net.
+
+Refresh the golden image periodically (quarterly / on a Debian point release) so new probes ship
+already-patched. A **major** Debian upgrade (13 → 14) is a deliberate re-image, never unattended.
 
 ## Building
 
