@@ -1,0 +1,8 @@
+[Unit]
+Description=Report this probe VM's OS patch status to Argus (DESIGN §14c)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/argus-os-report.py
