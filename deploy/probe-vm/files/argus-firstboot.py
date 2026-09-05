@@ -15,6 +15,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import string
 import subprocess
 import threading
@@ -280,49 +281,75 @@ def enroll_status(since=None):
     return {"state": "starting"}
 
 
+# The same design tokens as the Argus UI (theme.css): light by default, dark when the device asks for it.
 STYLE = """
-  :root { color-scheme: dark; }
+  :root { color-scheme: light dark;
+    --bg: #eaeef4; --card: #ffffff; --border: #dbe2ec; --text: #141d28; --muted: #4f5b69; --faint: #647082;
+    --field: #f4f7fb; --accent: #2ea8c9; --ok: #3fa66a; --err: #e2564d; --shadow: 0 1px 2px rgba(20,30,45,.06), 0 6px 20px rgba(20,30,45,.06); }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg: #0e1218; --card: #151b23; --border: #262f3b; --text: #eef2f8; --muted: #b3bfcd; --faint: #8b98a8;
+    --field: #0e1218; --shadow: 0 12px 40px rgba(0,0,0,.4); } }
   * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-    background: #0e1217; color: #e6e9ef; font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
-  .card { width: min(30rem, 92vw); background: #161b22; border: 1px solid #232a33; border-radius: 14px;
-    padding: 1.75rem 1.75rem 2rem; box-shadow: 0 12px 40px rgba(0,0,0,.4); }
-  .brand { display: flex; align-items: center; gap: .55rem; font-weight: 700; letter-spacing: -.01em;
-    font-size: 1.15rem; margin-bottom: 1.1rem; }
-  .brand .dot { width: 12px; height: 12px; border-radius: 50%; background: #2ea8c9;
-    box-shadow: 0 0 0 4px rgba(46,168,201,.18); }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem;
+    background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  .card { width: min(30rem, 100%); background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 1.6rem 1.6rem 1.4rem; box-shadow: var(--shadow); }
+  .brand { display: flex; align-items: center; gap: .6rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+    font-size: .95rem; margin-bottom: 1.1rem; }
+  .brand svg { width: 26px; height: 26px; color: var(--accent); flex: none; }
+  .brand small { display: block; font-size: .62rem; letter-spacing: .14em; color: var(--faint); font-weight: 600; margin-top: 1px; }
   h1 { font-size: 1.15rem; margin: 0 0 .4rem; }
-  p.hint { color: #9aa4b2; font-size: .88rem; margin: 0 0 1.2rem; }
-  label { display: block; font-weight: 600; font-size: .82rem; margin: 1rem 0 .3rem; color: #c4ccd6; }
-  input { width: 100%; padding: .6rem .7rem; font-size: .95rem; color: #e6e9ef; background: #0e1217;
-    border: 1px solid #2b333d; border-radius: 8px; }
-  input:focus { outline: none; border-color: #2ea8c9; box-shadow: 0 0 0 3px rgba(46,168,201,.2); }
-  select { width: 100%; padding: .6rem .7rem; font-size: .95rem; color: #e6e9ef; background: #0e1217;
-    border: 1px solid #2b333d; border-radius: 8px; }
-  .sub { color: #6b7482; font-size: .78rem; margin-top: .3rem; }
-  button { margin-top: 1.5rem; width: 100%; padding: .7rem 1rem; font-size: .95rem; font-weight: 600;
-    color: #04121a; background: #2ea8c9; border: none; border-radius: 8px; cursor: pointer; }
-  button:hover { background: #35b7da; }
-  .err { color: #e2564d; font-size: .85rem; margin: .8rem 0 0; }
+  p.hint { color: var(--muted); font-size: .88rem; margin: 0 0 1.2rem; }
+  label { display: block; font-weight: 600; font-size: .82rem; margin: 1rem 0 .3rem; color: var(--muted); }
+  input, select { width: 100%; padding: .6rem .7rem; font-size: 1rem; color: var(--text); background: var(--field);
+    border: 1px solid var(--border); border-radius: 8px; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(46,168,201,.2); }
+  .sub { color: var(--faint); font-size: .78rem; margin-top: .3rem; }
+  button { margin-top: 1.5rem; width: 100%; padding: .75rem 1rem; font-size: .95rem; font-weight: 600;
+    color: #fff; background: var(--accent); border: none; border-radius: 8px; cursor: pointer; }
+  button:hover { filter: brightness(1.05); }
+  .err { color: var(--err); font-size: .85rem; margin: .8rem 0 0; }
   /* status page */
   .steps { list-style: none; padding: 0; margin: 1.2rem 0 0; }
-  .steps li { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; color: #6b7482; font-size: .92rem; }
-  .steps li.done { color: #3fa66a; }
-  .steps li.active { color: #e6e9ef; }
-  .steps li.fail { color: #e2564d; }
+  .steps li { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; color: var(--faint); font-size: .92rem; }
+  .steps li.done { color: var(--ok); }
+  .steps li.active { color: var(--text); }
+  .steps li.fail { color: var(--err); }
   .ic { width: 18px; text-align: center; flex: none; }
   .result { margin-top: 1.2rem; font-weight: 600; }
-  .result.ok { color: #3fa66a; }
-  .result.bad { color: #e2564d; }
-  a.retry { color: #2ea8c9; }
+  .result.ok { color: var(--ok); }
+  .result.bad { color: var(--err); }
+  a.retry { color: var(--accent); }
+  /* which VM this is (hostname · address), so the page is unambiguous with several probes on the bench */
+  .vm { margin-top: 1.4rem; padding-top: .8rem; border-top: 1px solid var(--border); font-size: .78rem; color: var(--faint); }
+  .vm b { color: var(--muted); font-weight: 600; }
 """
 
+# The Argus "probe" mark (the same radar glyph as the Probes tab in the UI), inline so the page needs no
+# extra request.
+LOGO = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">'
+        '<circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19 5a10 10 0 0 1 0 14M5 19A10 10 0 0 1 5 5"/></svg>')
 
-def page(body):
+
+def vm_identity():
+    """'hostname · ip [· ip]' for the page footer - which VM am I looking at. Best-effort."""
+    try:
+        name = socket.gethostname()
+    except Exception:
+        name = ""
+    ips = [ip for ip in sh("hostname", "-I").split() if not ip.startswith("127.")]
+    parts = [html.escape(p) for p in ([name] if name else []) + ips[:2]]
+    return " · ".join(parts)
+
+
+def page(body, head_extra=""):
+    ident = vm_identity()
+    foot = f"<div class=vm>This VM: <b>{ident}</b></div>" if ident else ""
     return f"<!doctype html><html lang=en><head><meta charset=utf-8>" \
            f"<meta name=viewport content='width=device-width, initial-scale=1'>" \
+           f"<meta name=color-scheme content='light dark'>{head_extra}" \
            f"<title>Argus probe setup</title><style>{STYLE}</style></head><body>" \
-           f"<div class=card><div class=brand><span class=dot></span>Argus probe</div>{body}</div></body></html>"
+           f"<div class=card><div class=brand>{LOGO}<div>Argus<small>Probe setup</small></div></div>{body}{foot}</div></body></html>"
 
 
 FORM = """
@@ -335,7 +362,7 @@ FORM = """
     <input id="u" name="enroll_url" placeholder="https://monitoring.example.com/api/enroll" value="{url}" required>
     <label for="t">Enrollment token</label>
     <input id="t" name="enroll_token" placeholder="the single-use token" value="{token}" required>
-    <label for="c">Core host <span style="color:#6b7482;font-weight:400">(optional)</span></label>
+    <label for="c">Core host <span style="color:var(--faint);font-weight:400">(optional)</span></label>
     <input id="c" name="core_host" placeholder="usually leave blank" value="{core}">
     <div class="sub">Leave blank — Argus fills this in. Only set it if the probe can't reach the server after enrolling.</div>
     <label for="k">Console keyboard layout</label>
@@ -353,15 +380,52 @@ FORM = """
   </form>
 """
 
+# The progress page is rendered with the CURRENT state server-side (so it is right without JavaScript - a
+# <noscript> meta-refresh reloads it every 3s), and the script then polls /status for live updates.
+STEP_LABELS = [("starting", "Starting the probe"), ("enrolling", "Generating key &amp; redeeming the token"), ("enrolled", "Registered with Argus")]
+NOSCRIPT_REFRESH = "<noscript><meta http-equiv=refresh content=3></noscript>"
+
+
+def render_steps(status):
+    """Server-side rendering of the step list + result line for an enroll_status() dict."""
+    order = [k for k, _ in STEP_LABELS]
+    state = status.get("state", "starting")
+    idx = order.index(state) if state in order else -1
+    items = []
+    for i, (k, label) in enumerate(STEP_LABELS):
+        cls, ic = "", "•"
+        if state == "enrolled" or i < idx:
+            cls, ic = "done", "✓"
+        elif state == "failed":
+            cls, ic = ("done", "✓") if i == 0 else ("fail", "✕")
+        elif i == idx:
+            cls, ic = "active", "…"
+        items.append(f'<li data-k="{k}" class="{cls}"><span class="ic">{ic}</span> {label}</li>')
+    result = ""
+    if state == "failed":
+        result = ('<div class="result bad" id="result">Enrollment failed: ' + html.escape(status.get("detail") or "unknown error")
+                  + '<br><a class="retry" href="/?edit=1">Change the URL or token and try again</a></div>')
+    elif state == "enrolled":
+        who = (" as " + html.escape(status["name"])) if status.get("name") else ""
+        result = f'<div class="result ok" id="result">✓ Enrolled{who} — it will appear on the Probes page shortly. You can close this page.</div>'
+    else:
+        result = '<div class="result" id="result"></div>'
+    return "\n".join(items), result
+
+
+def progress_page(status):
+    steps, result = render_steps(status)
+    body = PROGRESS.replace("%%STEPS%%", steps).replace("%%RESULT%%", result)
+    return page(body, head_extra=NOSCRIPT_REFRESH)
+
+
 PROGRESS = """
   <h1>Enrolling this probe…</h1>
   <p class="hint">Registering with Argus. This usually takes a few seconds.</p>
   <ul class="steps" id="steps">
-    <li data-k="starting"><span class="ic">•</span> Starting the probe</li>
-    <li data-k="enrolling"><span class="ic">•</span> Generating key &amp; redeeming the token</li>
-    <li data-k="enrolled"><span class="ic">•</span> Registered with Argus</li>
+%%STEPS%%
   </ul>
-  <div class="result" id="result"></div>
+%%RESULT%%
   <script>
     const ORDER = ["starting", "enrolling", "enrolled"];
     async function poll() {
@@ -370,14 +434,14 @@ PROGRESS = """
       const steps = [...document.querySelectorAll("#steps li")];
       const res = document.getElementById("result");
       if (s.state === "failed") {
-        steps.forEach(li => { if (!li.classList.contains("done")) { li.classList.add("fail"); li.querySelector(".ic").textContent = "✕"; } });
+        steps.forEach(li => { li.classList.remove("active"); if (!li.classList.contains("done")) { li.classList.add("fail"); li.querySelector(".ic").textContent = "✕"; } });
         res.className = "result bad";
         res.innerHTML = "Enrollment failed: " + (s.detail || "unknown error") + '<br><a class="retry" href="/?edit=1">Change the URL or token and try again</a>';
         return;
       }
       const idx = ORDER.indexOf(s.state);
       steps.forEach((li, i) => {
-        li.classList.remove("active");
+        li.classList.remove("active", "fail");
         if (i < idx || s.state === "enrolled") { li.classList.add("done"); li.querySelector(".ic").textContent = "✓"; }
         else if (i === idx) { li.classList.add("active"); li.querySelector(".ic").textContent = "…"; }
       });
@@ -422,7 +486,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(self._form(env=read_kv(ENV_PATH)))
             return
         if self.server.submitted or already_enrolled():
-            self._send(page(PROGRESS))
+            self._send(progress_page(enroll_status(self.server.attempt_since)))
             return
         self._send(self._form())
 
@@ -442,7 +506,7 @@ class Handler(BaseHTTPRequestHandler):
         self.server.attempt_since = time.time()  # scope status polling to this attempt
         start_probe()
         self.server.submitted = True
-        self._send(page(PROGRESS))
+        self._send(progress_page({"state": "starting"}))
 
     def log_message(self, *args):
         pass
