@@ -49,6 +49,12 @@ def sec_updates():
     return n
 
 
+def os_pretty_name():
+    """The OS pretty-name from /etc/os-release (e.g. "Debian GNU/Linux 13 (trixie)"), "" if unreadable.
+    read_kv keeps the surrounding quotes os-release uses (PRETTY_NAME="..."), so strip them."""
+    return read_kv("/etc/os-release").get("PRETTY_NAME", "").strip().strip('"')
+
+
 def main():
     env = read_kv(META)
     token, checkin = env.get("PROBE_TOKEN", ""), env.get("CHECKIN_URL", "")
@@ -58,6 +64,7 @@ def main():
     body = json.dumps({
         "sec_updates": sec_updates(),
         "reboot_required": os.path.exists("/var/run/reboot-required"),
+        "os": os_pretty_name(),
     }).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"Authorization": "Bearer " + token,
