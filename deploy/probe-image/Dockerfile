@@ -17,7 +17,10 @@ USER root
 # openssl/curl/jq: enrollment + check-in only. The proxy is a pure reporter and never touches Docker
 # - all self-update work is done by the separate argus-updater sidecar (probe-watch mode), which
 # holds the socket - so this image needs no docker-cli.
-RUN apk add --no-cache openssl curl jq
+# python3: runs the Argus external-check collectors (argus_nut.py for NUT/upsd, dns-resolver.py for
+# DNS resolution) that let agentless device classes reach protocols Zabbix can't poll natively. Both
+# are stdlib-only (they build/parse the wire protocol themselves), so no extra Python packages.
+RUN apk add --no-cache openssl curl jq python3
 
 # Bake the image version (Zabbix version + our wrapper revision, e.g. "7.0.29-r1") so the running
 # probe can report it to Argus at check-in. Supplied by CI (probe-image.yml); "dev" for local builds.
@@ -28,6 +31,11 @@ LABEL org.opencontainers.image.source="https://github.com/g-guglielmi/argus-prob
 
 COPY entrypoint.sh /usr/local/bin/argus-entrypoint.sh
 RUN chmod +x /usr/local/bin/argus-entrypoint.sh
+
+# Argus external-check collectors for agentless device classes (NUT UPS, DNS resolution). Zabbix runs
+# these from its ExternalScripts dir (default /usr/lib/zabbix/externalscripts) as the zabbix user.
+COPY externalscripts/ /usr/lib/zabbix/externalscripts/
+RUN chmod 0755 /usr/lib/zabbix/externalscripts/*.py
 
 # Run as root (like the stock image expects): the entrypoint prepares the fresh, root-owned
 # /var/lib/zabbix volume and chowns the enrolled certs, then hands off to the stock entrypoint,
