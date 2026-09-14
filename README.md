@@ -41,3 +41,10 @@ via cloud-init (a seed ISO) is also supported, in which case this page is skippe
   `probe-vm/v*` tag or manual dispatch).
 
 See `deploy/probe-vm/README.md` for building and deploying the VM.
+
+## License
+
+Argus is free software licensed under the **GNU Affero General Public License v3.0**
+(see [`LICENSE`](LICENSE)). Source: <https://github.com/g-guglielmi/argus-probe>
+
+Copyright (C) 2026 g-guglielmi
