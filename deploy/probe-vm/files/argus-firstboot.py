@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+
 """Argus probe first-boot enrollment fallback.
 
 Runs on first boot. If an enrollment token is already present (cloud-init seed), it just starts the
@@ -322,6 +325,8 @@ STYLE = """
   a.retry { color: var(--accent); }
   /* which VM this is (hostname · address), so the page is unambiguous with several probes on the bench */
   .vm { margin-top: 1.4rem; padding-top: .8rem; border-top: 1px solid var(--border); font-size: .78rem; color: var(--faint); }
+.vm a { color: inherit; text-decoration: underline; }
+.vm .src { margin-top: .4rem; }
   .vm b { color: var(--muted); font-weight: 600; }
 """
 
@@ -344,7 +349,12 @@ def vm_identity():
 
 def page(body, head_extra=""):
     ident = vm_identity()
-    foot = f"<div class=vm>This VM: <b>{ident}</b></div>" if ident else ""
+    # AGPL-3.0 §13: this network-served UI must let its users reach the corresponding source.
+    vm_line = f"<div>This VM: <b>{ident}</b></div>" if ident else ""
+    src_line = "<div class=src>Argus probe — free software under the " \
+               "<a href='https://www.gnu.org/licenses/agpl-3.0.html'>AGPL-3.0</a>. " \
+               "<a href='https://github.com/g-guglielmi/argus-probe'>Source code</a>.</div>"
+    foot = f"<div class=vm>{vm_line}{src_line}</div>"
     return f"<!doctype html><html lang=en><head><meta charset=utf-8>" \
            f"<meta name=viewport content='width=device-width, initial-scale=1'>" \
            f"<meta name=color-scheme content='light dark'>{head_extra}" \

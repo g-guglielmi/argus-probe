@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+
 # argus-probe entrypoint: self-enroll on first boot, then hand off to the stock Zabbix proxy.
 #
 # On first boot (no certs on the data volume yet) it generates a keypair + CSR locally, redeems

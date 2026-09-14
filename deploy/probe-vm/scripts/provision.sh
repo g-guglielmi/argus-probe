@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+
 # Provision the Argus probe golden image on top of the stock Debian cloud image: install Docker + the
 # probe container, install the probe systemd unit + first-boot enrollment fallback, then leave the VM
 # un-enrolled (enrollment happens at deploy time via cloud-init or the first-boot page). Identity is

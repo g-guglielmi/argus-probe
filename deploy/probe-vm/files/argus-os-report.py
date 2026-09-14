@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+
 """Report this probe VM's OS patch status to Argus (DESIGN §14c).
 
 The VM patches its own Debian OS locally via unattended-upgrades (security suite only) and reboots

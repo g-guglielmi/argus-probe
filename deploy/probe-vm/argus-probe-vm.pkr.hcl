@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 g-guglielmi
+
 // Argus probe golden image (§14a). Builds on top of the official Debian 13 (trixie) "generic" cloud
 // qcow2 rather than a from-ISO preseed install: the cloud image boots in seconds under plain TCG
 // (GitHub runners have no KVM acceleration) and already ships cloud-init, so the result is the same
