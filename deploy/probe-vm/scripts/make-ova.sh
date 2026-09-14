@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+
 # Package the golden qcow2 as an OVA (VMware / Nutanix / VirtualBox; also importable by Xen Orchestra
 # as a full VM, not just a bare VDI). An OVA is a plain tar of three members: the OVF descriptor, a
 # SHA256 manifest, and the disk as a stream-optimized VMDK. No proprietary tooling - qemu-img makes
