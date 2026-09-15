@@ -78,8 +78,31 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ "${PROBE_TOKEN:-}" != "$PRIOR_TOKEN" ]; then
   echo "argus-probe: check-in credential saved to the data volume - you can remove ARGUS_PROBE_TOKEN now"
 fi
 
+# --- central core-host sync (fleet re-point) ---
+# Re-fetch the core host from Argus at every start, so changing ARGUS_PROBE_CORE_HOST centrally
+# re-points the whole fleet on the next restart - no re-enrollment. The check-in response carries
+# the current core_host; we apply it to the baked value (an explicit ZBX_SERVER_HOST below still
+# wins) and persist it so it survives a later Argus outage. Best-effort and fail-safe: any failure
+# (older Argus, transient network, unset value) keeps the last known CORE_HOST, so nothing can
+# strand the probe. Skipped when ZBX_SERVER_HOST already pins the host.
+PROBE_VERSION="$(cat /etc/argus-probe.version 2>/dev/null || echo dev)"
+if [ -z "${ZBX_SERVER_HOST:-}" ] && [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
+  SYNC=$(curl -sS -m 15 \
+    -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg v "$PROBE_VERSION" '{version:$v}')" \
+    "$CHECKIN_URL" 2>/dev/null || true)
+  NEW_HOST=$(printf '%s' "$SYNC" | jq -r '.core_host // ""' 2>/dev/null || true)
+  if [ -n "$NEW_HOST" ] && [ "$NEW_HOST" != "${CORE_HOST:-}" ]; then
+    echo "argus-probe: core host updated by Argus: ${CORE_HOST:-<unset>} -> $NEW_HOST"
+    CORE_HOST="$NEW_HOST"
+    printf 'PROXY_NAME=%s\nCORE_HOST=%s\nPROBE_TOKEN=%s\nCHECKIN_URL=%s\n' \
+      "${PROXY_NAME:-}" "$CORE_HOST" "${PROBE_TOKEN:-}" "${CHECKIN_URL:-}" > "$META"
+    chmod 600 "$META" 2>/dev/null || true
+  fi
+fi
+
 # An explicit ZBX_SERVER_HOST always wins (lets you re-point a probe without re-enrolling); else
-# use the core host baked in at enrollment.
+# use the core host baked in at enrollment (or just refreshed from Argus above).
 CORE_HOST="${ZBX_SERVER_HOST:-$CORE_HOST}"
 if [ -z "$CORE_HOST" ]; then
   echo "argus-probe: no core host known - set ARGUS_PROBE_CORE_HOST in Argus or ZBX_SERVER_HOST here" >&2
@@ -103,8 +126,7 @@ export ZBX_TLSSERVERCERTSUBJECT="${ZBX_TLSSERVERCERTSUBJECT:-CN=zabbix-core}"
 # and receive the fleet target. Report-only (no Docker socket); the opt-in self-updater is a
 # separate sidecar. Runs as a background child so the Zabbix proxy stays PID 1. Best-effort: any
 # failure (older Argus, transient network) is ignored and retried next tick. The check-in
-# credential (PROBE_TOKEN / CHECKIN_URL) was resolved above.
-PROBE_VERSION="$(cat /etc/argus-probe.version 2>/dev/null || echo dev)"
+# credential (PROBE_TOKEN / CHECKIN_URL) and PROBE_VERSION were resolved above.
 
 # The proxy is a pure reporter: it reports its running version to Argus and reads the fleet target
 # for drift visibility, but it never touches Docker. Self-update is done by the separate
