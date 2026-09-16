@@ -148,5 +148,12 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
   ) &
 fi
 
+# The base Zabbix entrypoint unconditionally copies /var/lib/zabbix/ssl/ssl_ca into ssl_ca_internal
+# for HTTPS-based checks and aborts if the source dir is missing (`cp: can't stat ...ssl_ca/.`) - which
+# crash-loops the proxy on any data volume created before that dir existed. Create the SSL dirs
+# (empty is fine; the copy of an empty dir is a no-op) so the handoff never fails.
+mkdir -p /var/lib/zabbix/ssl/ssl_ca /var/lib/zabbix/ssl/ssl_ca_internal \
+         /var/lib/zabbix/ssl/certs /var/lib/zabbix/ssl/keys 2>/dev/null || true
+
 echo "argus-probe: starting Zabbix proxy '$ZBX_HOSTNAME' -> $ZBX_SERVER_HOST:10051"
 exec /usr/bin/docker-entrypoint.sh "$@"
