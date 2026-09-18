@@ -18,8 +18,9 @@ USER root
 # - all self-update work is done by the separate argus-updater sidecar (probe-watch mode), which
 # holds the socket - so this image needs no docker-cli.
 # python3: runs the Argus external-check collectors (argus_nut.py for NUT/upsd, dns-resolver.py for
-# DNS resolution) that let agentless device classes reach protocols Zabbix can't poll natively. Both
-# are stdlib-only (they build/parse the wire protocol themselves), so no extra Python packages.
+# DNS resolution, argus_xcpng.py for XCP-NG's XAPI) that let agentless device classes reach
+# protocols Zabbix can't poll natively. All stdlib-only (they build/parse the wire protocols
+# themselves), so no extra Python packages.
 RUN apk add --no-cache openssl curl jq python3
 
 # Bake the image version (Zabbix version + our wrapper revision, e.g. "7.0.29-r1") so the running
@@ -32,8 +33,9 @@ LABEL org.opencontainers.image.source="https://github.com/g-guglielmi/argus-prob
 COPY entrypoint.sh /usr/local/bin/argus-entrypoint.sh
 RUN chmod +x /usr/local/bin/argus-entrypoint.sh
 
-# Argus external-check collectors for agentless device classes (NUT UPS, DNS resolution). Zabbix runs
-# these from its ExternalScripts dir (default /usr/lib/zabbix/externalscripts) as the zabbix user.
+# Argus external-check collectors for agentless device classes (NUT UPS, DNS resolution, XCP-NG).
+# Zabbix runs these from its ExternalScripts dir (default /usr/lib/zabbix/externalscripts) as the
+# zabbix user.
 COPY externalscripts/ /usr/lib/zabbix/externalscripts/
 RUN chmod 0755 /usr/lib/zabbix/externalscripts/*.py
 
