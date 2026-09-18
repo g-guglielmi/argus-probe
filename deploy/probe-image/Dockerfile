@@ -18,10 +18,12 @@ USER root
 # - all self-update work is done by the separate argus-updater sidecar (probe-watch mode), which
 # holds the socket - so this image needs no docker-cli.
 # python3: runs the Argus external-check collectors (argus_nut.py for NUT/upsd, dns-resolver.py for
-# DNS resolution, argus_xcpng.py for XCP-NG's XAPI) that let agentless device classes reach
-# protocols Zabbix can't poll natively. All stdlib-only (they build/parse the wire protocols
-# themselves), so no extra Python packages.
-RUN apk add --no-cache openssl curl jq python3
+# DNS resolution, argus_xcpng.py for XCP-NG's XAPI, argus_linux_ssh.py for agentless Linux over SSH)
+# that let agentless device classes reach protocols Zabbix can't poll natively. All stdlib-only (they
+# build/parse the wire protocols themselves), so no extra Python packages.
+# openssh-client + sshpass: the agentless-Linux collector logs into the target over SSH (key auth via
+# openssh-client; password auth via sshpass, which feeds $SSHPASS so no password touches argv/ps).
+RUN apk add --no-cache openssl curl jq python3 openssh-client sshpass
 
 # Bake the image version (Zabbix version + our wrapper revision, e.g. "7.0.29-r1") so the running
 # probe can report it to Argus at check-in. Supplied by CI (probe-image.yml); "dev" for local builds.
