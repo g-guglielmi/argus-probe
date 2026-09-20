@@ -33,6 +33,19 @@ via cloud-init (a seed ISO) is also supported, in which case this page is skippe
 - **[argus-updater](https://github.com/g-guglielmi/argus-updater)** — the socket-holding self-update
   sidecar for the core.
 
+## Check-in & network discovery
+
+The running probe reports to Argus every **60 seconds** (`POST /api/probes/checkin`, Bearer probe
+token minted at enrollment): `{"version": "<zabbix>-r<n>", "scans": true}` - its image version plus
+the **network-scan capability** advert. The response carries the fleet target, the current core host
+(fleet re-point), and, when an Argus admin has queued a subnet scan for this probe, a one-shot
+`scan: {id, cidr, snmp}` job. The entrypoint then backgrounds `argus_netscan.py` (stdlib-only Python,
+baked into the image at `/usr/lib/zabbix/externalscripts/`), which sweeps the subnet - ICMP, a small
+TCP port set, SNMP v1/v2c system OIDs, an HTTP(S) banner, a real DNS query, reverse DNS, ARP - and
+POSTs the raw fingerprints back to `POST /api/probes/scan-results`. One scan at a time (lock file),
+an 8-minute budget, at most 1024 addresses; the probe stays a pure reporter with no listening port,
+and an older Argus that never sends `scan` leaves the branch inert.
+
 ## Images & releases
 
 - Container: `ghcr.io/g-guglielmi/argus-probe` (built by `.github/workflows/probe-image.yml`).

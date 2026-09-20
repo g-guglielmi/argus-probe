@@ -122,9 +122,9 @@ export ZBX_TLSKEYFILE="$KEY"
 export ZBX_TLSSERVERCERTISSUER="${ZBX_TLSSERVERCERTISSUER:-CN=Monitoring Core CA}"
 export ZBX_TLSSERVERCERTSUBJECT="${ZBX_TLSSERVERCERTSUBJECT:-CN=zabbix-core}"
 
-# Fleet check-in reporter: every 5 min, report our running version + self-updater flag to Argus
-# and receive the fleet target. Report-only (no Docker socket); the opt-in self-updater is a
-# separate sidecar. Runs as a background child so the Zabbix proxy stays PID 1. Best-effort: any
+# Fleet check-in reporter: every minute, report our running version (+ the network-scan capability)
+# to Argus and receive the fleet target. Report-only (no Docker socket); the opt-in self-updater is
+# a separate sidecar. Runs as a background child so the Zabbix proxy stays PID 1. Best-effort: any
 # failure (older Argus, transient network) is ignored and retried next tick. The check-in
 # credential (PROBE_TOKEN / CHECKIN_URL) and PROBE_VERSION were resolved above.
 
@@ -133,17 +133,40 @@ export ZBX_TLSSERVERCERTSUBJECT="${ZBX_TLSSERVERCERTSUBJECT:-CN=zabbix-core}"
 # argus-updater sidecar (probe-watch mode), which holds the socket - so the proxy never does, and it
 # needs no docker-cli. The sidecar is what advertises self-update capability to Argus; we only report
 # our version (Argus keeps the stored capability flag when a check-in omits it).
+#
+# Network discovery piggybacks on the same channel: "scans":true advertises the capability, and a
+# response may carry a one-shot .scan job ({id, cidr, snmp}) queued by an Argus admin. The scan runs
+# in a backgrounded argus_netscan.py so this tick is never blocked; a lock file keeps scans serial,
+# and the scanner POSTs its results straight back to Argus (<checkin base>/scan-results). An older
+# Argus simply never sends .scan - the branch is inert.
 if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
   echo "argus-probe: fleet check-in enabled -> $CHECKIN_URL (version $PROBE_VERSION)"
   (
     # A short initial delay lets the proxy come up before the first report.
     sleep 20
+    LOCK="$CERTS/netscan.lock"
+    JOBFILE="$CERTS/scanjob.json"
     while true; do
-      curl -sS -m 15 \
+      RESP=$(curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
-        -d "$(jq -nc --arg v "$PROBE_VERSION" '{version:$v}')" \
-        "$CHECKIN_URL" >/dev/null 2>&1 || true
-      sleep 300
+        -d "$(jq -nc --arg v "$PROBE_VERSION" '{version:$v, scans:true}')" \
+        "$CHECKIN_URL" 2>/dev/null || true)
+      JOB=$(printf '%s' "$RESP" | jq -c '.scan // empty' 2>/dev/null || true)
+      if [ -n "$JOB" ]; then
+        # A lock older than the scanner's own 8-minute budget is a crashed run - clear it.
+        if [ -f "$LOCK" ] && [ -n "$(find "$LOCK" -mmin +15 2>/dev/null)" ]; then rm -f "$LOCK"; fi
+        if [ ! -f "$LOCK" ]; then
+          touch "$LOCK"
+          printf '%s' "$JOB" > "$JOBFILE"
+          echo "argus-probe: network scan requested by Argus: $(printf '%s' "$JOB" | jq -r '.cidr // "?"' 2>/dev/null || echo '?')"
+          (
+            ARGUS_PROBE_TOKEN="$PROBE_TOKEN" ARGUS_CHECKIN_URL="$CHECKIN_URL" \
+              python3 /usr/lib/zabbix/externalscripts/argus_netscan.py --job "$JOBFILE" || true
+            rm -f "$LOCK" "$JOBFILE"
+          ) &
+        fi
+      fi
+      sleep 60
     done
   ) &
 fi

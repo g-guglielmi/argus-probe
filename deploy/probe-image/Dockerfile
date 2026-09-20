@@ -19,8 +19,9 @@ USER root
 # holds the socket - so this image needs no docker-cli.
 # python3: runs the Argus external-check collectors (argus_nut.py for NUT/upsd, dns-resolver.py for
 # DNS resolution, argus_xcpng.py for XCP-NG's XAPI, argus_linux_ssh.py for agentless Linux over SSH)
-# that let agentless device classes reach protocols Zabbix can't poll natively. All stdlib-only (they
-# build/parse the wire protocols themselves), so no extra Python packages.
+# that let agentless device classes reach protocols Zabbix can't poll natively, plus argus_netscan.py
+# (the network-discovery scanner the check-in loop runs when Argus queues a scan). All stdlib-only
+# (they build/parse the wire protocols themselves), so no extra Python packages and no nmap.
 # openssh-client + sshpass: the agentless-Linux collector logs into the target over SSH (key auth via
 # openssh-client; password auth via sshpass, which feeds $SSHPASS so no password touches argv/ps).
 RUN apk add --no-cache openssl curl jq python3 openssh-client sshpass
@@ -35,9 +36,10 @@ LABEL org.opencontainers.image.source="https://github.com/g-guglielmi/argus-prob
 COPY entrypoint.sh /usr/local/bin/argus-entrypoint.sh
 RUN chmod +x /usr/local/bin/argus-entrypoint.sh
 
-# Argus external-check collectors for agentless device classes (NUT UPS, DNS resolution, XCP-NG).
-# Zabbix runs these from its ExternalScripts dir (default /usr/lib/zabbix/externalscripts) as the
-# zabbix user.
+# Argus external-check collectors for agentless device classes (NUT UPS, DNS resolution, XCP-NG,
+# Linux over SSH) plus the network-discovery scanner. Zabbix runs the collectors from its
+# ExternalScripts dir (default /usr/lib/zabbix/externalscripts) as the zabbix user; the scanner is
+# run by our entrypoint's check-in loop instead.
 COPY externalscripts/ /usr/lib/zabbix/externalscripts/
 RUN chmod 0755 /usr/lib/zabbix/externalscripts/*.py
 
