@@ -197,33 +197,64 @@ def dns_answers(ip):
         return False
 
 
-def http_fingerprint(ip, ports):
-    # Banner-grab the first web port that answers (https first - richer titles than an http
-    # redirect stub): status + Server header + <title>.
+def _http_get(scheme, ip, port, path):
+    # One request, redirects NOT followed; returns (status, server, location, title).
     import http.client
     import ssl
+    if scheme == "https":
+        conn = http.client.HTTPSConnection(ip, port, timeout=3,
+                                           context=ssl._create_unverified_context())
+    else:
+        conn = http.client.HTTPConnection(ip, port, timeout=3)
+    conn.request("GET", path, headers={"Host": ip, "User-Agent": "argus-netscan"})
+    resp = conn.getresponse()
+    body = resp.read(8192).decode("utf-8", "replace")
+    conn.close()
+    title = ""
+    m = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
+    if m:
+        title = re.sub(r"\s+", " ", m.group(1)).strip()[:120]
+    return resp.status, (resp.getheader("Server") or "")[:80], resp.getheader("Location") or "", title
+
+
+def http_fingerprint(ip, ports):
+    # Banner-grab the first web port that answers (https first - richer titles than an http
+    # redirect stub): status + Server header + Location + <title>. SAME-HOST redirects are followed
+    # up to 2 hops for a real title (an app's / usually 302s to its login page - AdGuard's
+    # /login.html titles "AdGuard Home"); status/location stay those of the original /.
     candidates = [(p, s) for p, s in ((443, "https"), (80, "http"), (8443, "https"), (8080, "http"))
                   if p in ports]
     for port, scheme in candidates:
         try:
-            if scheme == "https":
-                conn = http.client.HTTPSConnection(ip, port, timeout=3,
-                                                   context=ssl._create_unverified_context())
-            else:
-                conn = http.client.HTTPConnection(ip, port, timeout=3)
-            conn.request("GET", "/", headers={"Host": ip, "User-Agent": "argus-netscan"})
-            resp = conn.getresponse()
-            body = resp.read(8192).decode("utf-8", "replace")
-            conn.close()
-            title = ""
-            m = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
-            if m:
-                title = re.sub(r"\s+", " ", m.group(1)).strip()[:120]
-            return {"port": port, "scheme": scheme, "status": resp.status,
-                    "server": (resp.getheader("Server") or "")[:80], "title": title}
+            status, server, location, title = _http_get(scheme, ip, port, "/")
+            loc, hops = location, 0
+            while not title and loc.startswith("/") and hops < 2:
+                try:
+                    s2, _srv, loc, title = _http_get(scheme, ip, port, loc)
+                except Exception:
+                    break
+                hops += 1
+                if not 300 <= s2 < 400:
+                    break
+            return {"port": port, "scheme": scheme, "status": status, "server": server,
+                    "title": title, "location": location[:120]}
         except Exception:
             continue
     return None
+
+
+def ssh_banner(ip):
+    # The version line an SSH server volunteers on connect - "SSH-2.0-dropbear_..." identifies
+    # embedded gear (UniFi switches, routers), "SSH-2.0-OpenSSH_..." a regular box.
+    try:
+        s = socket.create_connection((ip, 22), timeout=2)
+        s.settimeout(2)
+        data = s.recv(120)
+        s.close()
+        line = data.split(b"\n")[0].decode("utf-8", "replace").strip()
+        return line[:60] if line.startswith("SSH-") else ""
+    except Exception:
+        return ""
 
 
 def rdns(ip):
@@ -263,6 +294,10 @@ def scan_host(ip, snmp_cfg):
         host["snmp"] = snmp
     if 53 in open_ports and dns_answers(ip):
         host["dns"] = True
+    if 22 in open_ports:
+        banner = ssh_banner(ip)
+        if banner:
+            host["ssh"] = banner
     fp = http_fingerprint(ip, open_ports)
     if fp:
         host["http"] = fp
