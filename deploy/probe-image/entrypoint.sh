@@ -134,11 +134,12 @@ export ZBX_TLSSERVERCERTSUBJECT="${ZBX_TLSSERVERCERTSUBJECT:-CN=zabbix-core}"
 # needs no docker-cli. The sidecar is what advertises self-update capability to Argus; we only report
 # our version (Argus keeps the stored capability flag when a check-in omits it).
 #
-# Network discovery piggybacks on the same channel: "scans":true advertises the capability, and a
-# response may carry a one-shot .scan job ({id, cidr, snmp}) queued by an Argus admin. The scan runs
-# in a backgrounded argus_netscan.py so this tick is never blocked; a lock file keeps scans serial,
-# and the scanner POSTs its results straight back to Argus (<checkin base>/scan-results). An older
-# Argus simply never sends .scan - the branch is inert.
+# Network discovery piggybacks on the same channel: "scans":true / "sweeps":true advertise the
+# capabilities, and a response may carry ONE one-shot job queued by an Argus admin - either a
+# .scan ({id, cidr, snmp}, subnet scan) or a .sweep ({id, url, key}, UniFi controller sweep).
+# Each runs in a backgrounded python3 so this tick is never blocked; a lock file per kind keeps
+# runs serial, and both scripts POST their results straight back to Argus
+# (<checkin base>/scan-results). An older Argus simply never sends .scan/.sweep - inert.
 if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
   echo "argus-probe: fleet check-in enabled -> $CHECKIN_URL (version $PROBE_VERSION)"
   (
@@ -146,10 +147,12 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
     sleep 20
     LOCK="$CERTS/netscan.lock"
     JOBFILE="$CERTS/scanjob.json"
+    SWLOCK="$CERTS/unifisweep.lock"
+    SWJOBFILE="$CERTS/sweepjob.json"
     while true; do
       RESP=$(curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
-        -d "$(jq -nc --arg v "$PROBE_VERSION" '{version:$v, scans:true}')" \
+        -d "$(jq -nc --arg v "$PROBE_VERSION" '{version:$v, scans:true, sweeps:true}')" \
         "$CHECKIN_URL" 2>/dev/null || true)
       JOB=$(printf '%s' "$RESP" | jq -c '.scan // empty' 2>/dev/null || true)
       if [ -n "$JOB" ]; then
@@ -163,6 +166,21 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
             ARGUS_PROBE_TOKEN="$PROBE_TOKEN" ARGUS_CHECKIN_URL="$CHECKIN_URL" \
               python3 /usr/lib/zabbix/externalscripts/argus_netscan.py --job "$JOBFILE" || true
             rm -f "$LOCK" "$JOBFILE"
+          ) &
+        fi
+      fi
+      SWEEP=$(printf '%s' "$RESP" | jq -c '.sweep // empty' 2>/dev/null || true)
+      if [ -n "$SWEEP" ]; then
+        # A sweep is a handful of HTTPS calls; a lock this old is a crashed run - clear it.
+        if [ -f "$SWLOCK" ] && [ -n "$(find "$SWLOCK" -mmin +15 2>/dev/null)" ]; then rm -f "$SWLOCK"; fi
+        if [ ! -f "$SWLOCK" ]; then
+          touch "$SWLOCK"
+          printf '%s' "$SWEEP" > "$SWJOBFILE"
+          echo "argus-probe: UniFi sweep requested by Argus: $(printf '%s' "$SWEEP" | jq -r '.url // "?"' 2>/dev/null || echo '?')"
+          (
+            ARGUS_PROBE_TOKEN="$PROBE_TOKEN" ARGUS_CHECKIN_URL="$CHECKIN_URL" \
+              python3 /usr/lib/zabbix/externalscripts/argus_unifi_sweep.py --job "$SWJOBFILE" || true
+            rm -f "$SWLOCK" "$SWJOBFILE"
           ) &
         fi
       fi
