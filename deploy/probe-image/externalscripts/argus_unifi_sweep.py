@@ -67,7 +67,9 @@ def sweep(base, key):
         desc = site.get("desc") or ""
         devs = get_json(base, prefix, "/api/s/%s/stat/device" % name, key)
         for d in devs.get("data") or []:
-            ip = (d.get("ip") or "").strip()
+            # Prefer lan_ip: for the gateway itself "ip" is the WAN address, and monitoring
+            # (plus the already-monitored dedupe) wants the LAN one. Switches/APs carry "ip".
+            ip = (d.get("lan_ip") or d.get("ip") or "").strip()
             if not d.get("adopted") or not ip:
                 continue  # a device without an IP can't be monitored
             hosts.append({
