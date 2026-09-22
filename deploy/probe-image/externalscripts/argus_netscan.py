@@ -402,9 +402,9 @@ def enrich_hosts(hosts, controllers):
         for d in devices:
             m = norm_mac(d["mac"])
             if m:
-                dev_mac.setdefault(m, (cid, d["facts"]))
+                dev_mac.setdefault(m, (cid, d))
             if d["ip"]:
-                dev_ip.setdefault(d["ip"], (cid, d["facts"]))
+                dev_ip.setdefault(d["ip"], (cid, d))
         for c in clients:
             m = norm_mac(c["mac"])
             if m:
@@ -417,8 +417,12 @@ def enrich_hosts(hosts, controllers):
         if hit is None:
             hit = dev_ip.get(h["ip"])
         if hit is not None:
-            h["unifi"] = hit[1]
+            h["unifi"] = hit[1]["facts"]
             h["unifi_ctl"] = hit[0]
+            # A routed scan sees no ARP, but the controller knows the MAC - and Argus needs it
+            # on the row to fill {$UNIFI.MAC} at adopt time.
+            if not h.get("mac"):
+                h["mac"] = hit[1]["mac"]
             continue
         c = (cli_mac.get(m) if m else None) or cli_ip.get(h["ip"])
         if c and (c["name"] or c["hostname"]):
