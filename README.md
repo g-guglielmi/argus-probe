@@ -41,10 +41,13 @@ image version plus the **network-scan** and **UniFi-sweep capability** adverts. 
 carries the fleet target, the current core host (fleet re-point), and, when an Argus admin has
 queued a discovery job for this probe, ONE one-shot job:
 
-- `scan: {id, cidr, snmp}` - the entrypoint backgrounds `argus_netscan.py` (stdlib-only Python,
-  baked into the image at `/usr/lib/zabbix/externalscripts/`), which sweeps the subnet - ICMP, a
-  small TCP port set, SNMP v1/v2c system OIDs, an HTTP(S) banner, a real DNS query, reverse DNS,
-  ARP. An 8-minute budget, at most 1024 addresses.
+- `scan: {id, cidr, snmp, controllers}` - the entrypoint backgrounds `argus_netscan.py`
+  (stdlib-only Python, baked into the image at `/usr/lib/zabbix/externalscripts/`), which sweeps
+  the subnet - ICMP, a small TCP port set, SNMP v1/v2c system OIDs, an HTTP(S) banner, a real DNS
+  query, reverse DNS, ARP. An 8-minute budget, at most 1024 addresses. Since r16 the optional
+  `controllers` list (Argus's saved UniFi controllers) is queried locally after the scan,
+  best-effort: matching hosts gain controller device facts (`unifi` + `unifi_ctl`) or a
+  client-table naming hint (`unifi_client`) in the posted results.
 - `sweep: {id, url, key}` - the entrypoint backgrounds `argus_unifi_sweep.py`, which asks that
   UniFi Network controller for its adopted devices (`X-API-KEY`, all sites, TLS unverified - a
   handful of HTTPS calls).

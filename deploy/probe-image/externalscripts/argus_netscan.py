@@ -16,7 +16,12 @@
 #
 # Run by the probe entrypoint when a check-in hands out a scan job (NOT a Zabbix external check;
 # it only lives in externalscripts so the image build ships it automatically):
-#   argus_netscan.py --job <job.json>            job: {"id":12,"cidr":"10.0.0.0/24","snmp":{...}}
+#   argus_netscan.py --job <job.json>            job: {"id":12,"cidr":"10.0.0.0/24","snmp":{...},
+#     "controllers":[{"id":1,"url":"https://...","key":"..."}]} - after the scan the saved UniFi
+#     controllers are queried LOCALLY (best-effort, X-API-KEY, TLS unverified like the templates):
+#     a host matching an adopted device gains "unifi" facts + "unifi_ctl", one matching the client
+#     table gains a "unifi_client" naming hint. Local matters: a controller is often reachable
+#     only from its site's probe, not from the Argus core.
 #     env: ARGUS_PROBE_TOKEN + ARGUS_CHECKIN_URL - results are POSTed with the probe's Bearer
 #     token to <checkin base>/scan-results; env keeps the token out of argv/ps.
 #   argus_netscan.py --print <cidr> [community]  standalone: print the results JSON to stdout
@@ -28,10 +33,12 @@ import os
 import random
 import re
 import socket
+import ssl
 import struct
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 TCP_PORTS = [22, 53, 80, 443, 445, 3493, 8080, 8443, 10050]
@@ -321,6 +328,103 @@ def scan(cidr, snmp_cfg):
     return {"hosts": hosts, "partial": past_deadline()}
 
 
+# --- UniFi controller enrichment (best-effort, after the scan) -------------------------------
+# The job may carry the saved controllers; querying them from HERE (the probe's own network)
+# is the point - the Argus core often can't reach a remote site's controller. Same API the
+# UniFi class templates poll: X-API-KEY, /proxy/network prefix with a bare-path fallback,
+# TLS unverified. Any failure just leaves the affected rows unenriched.
+
+CTL_TIMEOUT = 8        # per request
+ENRICH_BUDGET = 45     # overall, all controllers together
+
+
+def _ctl_get(base, prefix, path, key):
+    req = urllib.request.Request(base + prefix + path,
+                                 headers={"X-API-KEY": key, "Accept": "application/json"})
+    ctx = ssl._create_unverified_context()
+    with urllib.request.urlopen(req, timeout=CTL_TIMEOUT, context=ctx) as resp:
+        return json.loads(resp.read())
+
+
+def controller_inventory(base, key):
+    base = (base or "").strip().rstrip("/")
+    if not base or not key:
+        raise ValueError("no controller")
+    prefix = "/proxy/network"
+    try:
+        sites = _ctl_get(base, prefix, "/api/self/sites", key)
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+        prefix = ""  # plain self-hosted controller: no UniFi OS proxy prefix
+        sites = _ctl_get(base, prefix, "/api/self/sites", key)
+    devices, clients = [], []
+    for site in sites.get("data") or []:
+        name = site.get("name") or "default"
+        desc = site.get("desc") or ""
+        for d in (_ctl_get(base, prefix, "/api/s/%s/stat/device" % name, key).get("data") or []):
+            ip = (d.get("lan_ip") or d.get("ip") or "").strip()  # a gateway's "ip" is its WAN
+            if not d.get("adopted") or not ip:
+                continue
+            devices.append({"ip": ip, "mac": (d.get("mac") or "").strip().lower(),
+                            "facts": {"name": (d.get("name") or "").strip(),
+                                      "model": d.get("model") or "",
+                                      "type": (d.get("type") or "").lower(),
+                                      "state": int(d.get("state") or 0),
+                                      "version": d.get("version") or "",
+                                      "site": name, "site_desc": desc}})
+        for c in (_ctl_get(base, prefix, "/api/s/%s/stat/sta" % name, key).get("data") or []):
+            clients.append({"ip": (c.get("ip") or "").strip(),
+                            "mac": (c.get("mac") or "").strip().lower(),
+                            "name": (c.get("name") or "").strip(),
+                            "hostname": (c.get("hostname") or "").strip(),
+                            "wired": bool(c.get("is_wired"))})
+    return devices, clients
+
+
+def norm_mac(mac):
+    return "".join(ch for ch in (mac or "").lower() if ch in "0123456789abcdef")
+
+
+def enrich_hosts(hosts, controllers):
+    if not hosts or not controllers:
+        return
+    dev_mac, dev_ip, cli_mac, cli_ip = {}, {}, {}, {}
+    stop = time.monotonic() + ENRICH_BUDGET
+    for ctl in controllers:
+        if time.monotonic() > stop:
+            break
+        try:
+            devices, clients = controller_inventory(ctl.get("url"), ctl.get("key"))
+        except Exception:
+            continue  # unreachable from this probe / bad key: contributes nothing
+        cid = int(ctl.get("id") or 0)
+        for d in devices:
+            m = norm_mac(d["mac"])
+            if m:
+                dev_mac.setdefault(m, (cid, d["facts"]))
+            if d["ip"]:
+                dev_ip.setdefault(d["ip"], (cid, d["facts"]))
+        for c in clients:
+            m = norm_mac(c["mac"])
+            if m:
+                cli_mac.setdefault(m, c)
+            if c["ip"]:
+                cli_ip.setdefault(c["ip"], c)
+    for h in hosts:
+        m = norm_mac(h.get("mac"))
+        hit = dev_mac.get(m) if m else None
+        if hit is None:
+            hit = dev_ip.get(h["ip"])
+        if hit is not None:
+            h["unifi"] = hit[1]
+            h["unifi_ctl"] = hit[0]
+            continue
+        c = (cli_mac.get(m) if m else None) or cli_ip.get(h["ip"])
+        if c and (c["name"] or c["hostname"]):
+            h["unifi_client"] = {"name": c["name"], "hostname": c["hostname"], "wired": c["wired"]}
+
+
 def post_results(url, token, body):
     data = json.dumps(body).encode("utf-8")
     for attempt in range(3):
@@ -360,6 +464,10 @@ def main():
             body["hosts"] = out["hosts"]
             if out["partial"]:
                 body["error"] = "scan hit the time budget - results are partial"
+            try:
+                enrich_hosts(body["hosts"], job.get("controllers") or [])
+            except Exception:
+                pass  # enrichment is a bonus - the scan results must always ship
         except Exception as e:  # a bad CIDR etc. must still complete the job on core
             body["error"] = str(e)[:200]
         if not post_results(url, token, body):
