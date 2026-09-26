@@ -62,6 +62,10 @@ sends `scan`/`sweep` leaves the branches inert.
 - Container **revisions** are also cut as GitHub Releases `probe/v<zabbix>-r<n>`, tracking the Zabbix base version (decoupled from the app's semver).
 - Golden VM: GitHub Releases tagged `probe-vm/vX.Y.Z` (built by `.github/workflows/probe-vm.yml` on a
   `probe-vm/v*` tag or manual dispatch).
+- What changed in each release is in [CHANGELOG.md](CHANGELOG.md), which also feeds the Release
+  notes. A `probe-vm/v*` tag needs its section first (the build fails without it); a probe-image
+  release uses its section when present and otherwise lists the commits since the previous probe
+  tag. The changelog header explains how to name the next probe-image section.
 
 See `deploy/probe-vm/README.md` for building and deploying the VM.
 

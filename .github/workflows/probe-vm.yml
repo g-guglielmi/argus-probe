@@ -2,7 +2,8 @@ name: probe-vm
 
 # Golden image build for the self-configuring probe VM (§14a). Kept out of the main build workflow
 # because a full VM build under TCG is minutes-long - it runs only on demand (workflow_dispatch) or
-# when a `probe-vm/v*` tag is pushed (which also publishes a GitHub Release with the image assets).
+# when a `probe-vm/v*` tag is pushed (which also publishes a GitHub Release with the image assets,
+# its notes taken from the CHANGELOG.md section headed with the tag).
 # Every push that touches deploy/probe-vm/ still gets a fast `packer validate` sanity check.
 
 on:
@@ -40,6 +41,36 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+
+      # A tag build publishes the CHANGELOG.md section headed with the exact tag as the Release
+      # notes. Checked first, so a missing section fails in seconds instead of after the VM build.
+      - name: Extract changelog section (tag builds only)
+        if: github.ref_type == 'tag'
+        run: |
+          awk -v tag="$GITHUB_REF_NAME" '
+            index($0, "## [" tag "]") == 1 { flag=1; print; next }
+            flag && /^## \[/ { flag=0 }
+            flag { print }
+          ' ../../CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "No CHANGELOG section found for ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          cat >> RELEASE_NOTES.md <<'EOF'
+
+          **Downloads:**
+
+          - `argus-probe-vm.ova` - VMware / Nutanix / VirtualBox, and importable by Xen Orchestra
+            (**Import → OVA**) as a ready-to-run VM.
+          - `argus-probe-vm.qcow2` - KVM/libvirt, or convert as needed.
+          - `argus-probe-vm.vhd.gz` - import into XCP-NG (as a VDI) or Hyper-V. **gunzip first:**
+            `gunzip argus-probe-vm.vhd.gz`.
+
+          Deploy: create/import a VM from the disk, then give it the enrollment inputs one of three
+          ways from **Add probe → VM**: paste the cloud-init user-data, attach the **Download seed
+          ISO** as a CD, or boot it and use the first-boot setup page. See deploy/probe-vm/README.md.
+          EOF
+          echo "----- release notes -----"; cat RELEASE_NOTES.md
 
       - name: Install QEMU + ISO tooling
         run: |
@@ -95,16 +126,5 @@ jobs:
             deploy/probe-vm/output/argus-probe-vm.ova
             deploy/probe-vm/output/argus-probe-vm.qcow2
             deploy/probe-vm/output/argus-probe-vm.vhd.gz
-          body: |
-            Argus probe golden image (${{ github.ref_name }}).
-
-            - `argus-probe-vm.ova` - VMware / Nutanix / VirtualBox, and importable by Xen Orchestra
-              (**Import → OVA**) as a ready-to-run VM.
-            - `argus-probe-vm.qcow2` - KVM/libvirt, or convert as needed.
-            - `argus-probe-vm.vhd.gz` - import into XCP-NG (as a VDI) or Hyper-V. **gunzip first:**
-              `gunzip argus-probe-vm.vhd.gz`.
-
-            Deploy: create/import a VM from the disk, then give it the enrollment inputs one of three
-            ways from **Add probe → VM (cloud-init)**: paste the cloud-init user-data, attach the
-            **Download seed ISO** as a CD, or boot it and use the first-boot setup page. See
-            deploy/probe-vm/README.md.
+          # uses: steps don't take the job's working-directory, hence the deploy/probe-vm/ prefix.
+          body_path: deploy/probe-vm/RELEASE_NOTES.md
