@@ -214,7 +214,7 @@ jobs:
           # the commit subjects that touched the image since the previous probe tag (the bot's
           # lockfile commits are excluded by path).
           SECTION=$(awk -v tag="$TAG" '
-            index($0, "## [" tag "]") == 1 { flag=1; next }
+            index($0, "## [" tag "]") == 1 { flag=1; print; next }
             flag && /^## \[/ { flag=0 }
             flag { print }
           ' CHANGELOG.md 2>/dev/null | sed -e '/./,$!d' || true)
