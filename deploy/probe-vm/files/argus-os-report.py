@@ -5,11 +5,11 @@
 """Report this probe VM's OS patch status to Argus (DESIGN §14c).
 
 The VM patches its own Debian OS locally via unattended-upgrades (security suite only) and reboots
-itself in a weekly ~03:00 window. This reporter only *reports* — it posts the pending security-update
+itself in a weekly ~03:00 window. This reporter only *reports* - it posts the pending security-update
 count and the reboot-required flag to Argus so the fleet view shows which sites carry CVEs / need a
 reboot. Run hourly by argus-os-report.timer.
 
-Stdlib only. Authenticated by the same long-lived probe token the enrollment wrote to proxy.env — so
+Stdlib only. Authenticated by the same long-lived probe token the enrollment wrote to proxy.env - so
 until the VM has enrolled there's nothing to report and this exits quietly.
 """
 import json
@@ -62,7 +62,7 @@ def main():
     env = read_kv(META)
     token, checkin = env.get("PROBE_TOKEN", ""), env.get("CHECKIN_URL", "")
     if not token or not checkin:
-        return 0  # not enrolled yet — nothing to report
+        return 0  # not enrolled yet - nothing to report
     url = checkin.rsplit("/", 1)[0] + "/os-status"  # .../api/probes/checkin -> .../api/probes/os-status
     body = json.dumps({
         "sec_updates": sec_updates(),

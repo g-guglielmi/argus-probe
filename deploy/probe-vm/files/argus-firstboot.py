@@ -351,7 +351,7 @@ def page(body, head_extra=""):
     ident = vm_identity()
     # AGPL-3.0 §13: this network-served UI must let its users reach the corresponding source.
     vm_line = f"<div>This VM: <b>{ident}</b></div>" if ident else ""
-    src_line = "<div class=src>Argus probe — free software under the " \
+    src_line = "<div class=src>Argus probe - free software under the " \
                "<a href='https://www.gnu.org/licenses/agpl-3.0.html'>AGPL-3.0</a>. " \
                "<a href='https://github.com/g-guglielmi/argus-probe'>Source code</a>.</div>"
     foot = f"<div class=vm>{vm_line}{src_line}</div>"
@@ -374,7 +374,7 @@ FORM = """
     <input id="t" name="enroll_token" placeholder="the single-use token" value="{token}" required>
     <label for="c">Core host <span style="color:var(--faint);font-weight:400">(optional)</span></label>
     <input id="c" name="core_host" placeholder="usually leave blank" value="{core}">
-    <div class="sub">Leave blank — Argus fills this in. Only set it if the probe can't reach the server after enrolling.</div>
+    <div class="sub">Leave blank - Argus fills this in. Only set it if the probe can't reach the server after enrolling.</div>
     <label for="k">Console keyboard layout</label>
     <select id="k" name="keymap">
       <option value="us">US English</option>
@@ -417,7 +417,7 @@ def render_steps(status):
                   + '<br><a class="retry" href="/?edit=1">Change the URL or token and try again</a></div>')
     elif state == "enrolled":
         who = (" as " + html.escape(status["name"])) if status.get("name") else ""
-        result = f'<div class="result ok" id="result">✓ Enrolled{who} — it will appear on the Probes page shortly. You can close this page.</div>'
+        result = f'<div class="result ok" id="result">✓ Enrolled{who} - it will appear on the Probes page shortly. You can close this page.</div>'
     else:
         result = '<div class="result" id="result"></div>'
     return "\n".join(items), result
@@ -457,7 +457,7 @@ PROGRESS = """
       });
       if (s.state === "enrolled") {
         res.className = "result ok";
-        res.textContent = "✓ Enrolled" + (s.name ? " as " + s.name : "") + " — it will appear on the Probes page shortly. You can close this page.";
+        res.textContent = "✓ Enrolled" + (s.name ? " as " + s.name : "") + " - it will appear on the Probes page shortly. You can close this page.";
         return;
       }
       setTimeout(poll, 1500);

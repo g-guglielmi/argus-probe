@@ -1,7 +1,7 @@
 # Argus probe golden image (`deploy/probe-vm/`)
 
 A self-configuring **Debian 13 VM** that runs the `argus-probe` container and self-enrolls on first
-boot — the VM equivalent of the "Add probe" Docker command, for sites where a full VM is easier to
+boot - the VM equivalent of the "Add probe" Docker command, for sites where a full VM is easier to
 drop in than a Docker host. Implements DESIGN **§14a** (delivery vs. enrollment, decoupled).
 
 The VM is a thin wrapper: it boots, reads an **enrollment URL + token** (from cloud-init, an attached
@@ -13,7 +13,7 @@ The private key never leaves the VM; the token is single-use, so keep the disk p
 
 | File | Purpose |
 |------|---------|
-| `argus-probe-vm.pkr.hcl` | Packer template — builds the golden image (qcow2). |
+| `argus-probe-vm.pkr.hcl` | Packer template - builds the golden image (qcow2). |
 | `build-seed/` | Build-only cloud-init seed so Packer can SSH into the base cloud image. |
 | `scripts/provision.sh` | Installs Docker + the probe units into the image. |
 | `scripts/make-ova.sh` | Packages the built qcow2 into an OVA (stream-optimized VMDK + OVF + manifest). |
@@ -23,7 +23,7 @@ The private key never leaves the VM; the token is single-use, so keep the disk p
 | `files/argus-os-report.py` + `argus-os-report.service`/`.timer` | Hourly OS patch reporter: posts the VM's security-update count + reboot-required flag to Argus (DESIGN §14c). No-ops until enrolled. |
 | `files/probe.env.example` | Reference for the `probe.env` / seed-disk `ARGUS.ENV` contract. |
 
-## Design note — built from the Debian cloud image, not a preseed install
+## Design note - built from the Debian cloud image, not a preseed install
 
 DESIGN §14a sketched a from-ISO `debian-installer` preseed. We build on the official **Debian 13
 `generic` qcow2** instead: GitHub runners have no nested-KVM acceleration, so a from-ISO install
@@ -69,7 +69,7 @@ patch and the reboot are hands-off.
   (`Automatic-Reboot-Time`). Probes buffer 7 days offline, so a ~60 s reboot is invisible.
 - **`argus-os-report.timer`** posts the VM's pending **security-update count** and **reboot-required**
   flag to Argus hourly (`POST /api/probes/os-status`, probe-token auth), so the **Probes** page's **OS**
-  column shows which sites carry CVEs or are waiting on their reboot window. It only *reports* — Argus
+  column shows which sites carry CVEs or are waiting on their reboot window. It only *reports* - Argus
   never runs `apt` remotely (no clean rollback); the hypervisor snapshot is the safety net.
 
 Refresh the golden image periodically (quarterly / on a Debian point release) so new probes ship
@@ -77,10 +77,10 @@ already-patched. A **major** Debian upgrade (13 → 14) is a deliberate re-image
 
 ## Building
 
-CI (`.github/workflows/probe-vm.yml`) builds it — `packer validate` on every change under this
+CI (`.github/workflows/probe-vm.yml`) builds it - `packer validate` on every change under this
 directory, and a full build on **workflow_dispatch** or a **`probe-vm/v*`** tag (which also publishes
 a GitHub Release with the image assets). Outputs: `argus-probe-vm.qcow2` (~800 MB), `argus-probe-vm.vhd`
-(~2 GB), and `argus-probe-vm.ova` (~800 MB — a stream-optimized VMDK + OVF). The Release ships the OVA
+(~2 GB), and `argus-probe-vm.ova` (~800 MB - a stream-optimized VMDK + OVF). The Release ships the OVA
 and qcow2 as-is and the VHD **gzipped** (`argus-probe-vm.vhd.gz`, GitHub's 2 GiB asset cap); the raw
 VHD is available from the run's workflow artifacts.
 
@@ -97,31 +97,31 @@ packer build argus-probe-vm.pkr.hcl        # -> output/argus-probe-vm.qcow2
 **Import the disk.** Pick the format for your hypervisor:
 
 - **VMware / Nutanix / VirtualBox:** import `argus-probe-vm.ova` directly.
-- **XCP-NG / Xen Orchestra:** either import `argus-probe-vm.ova` (**Import → OVA** — creates a
+- **XCP-NG / Xen Orchestra:** either import `argus-probe-vm.ova` (**Import → OVA** - creates a
   ready-to-run VM), or `gunzip argus-probe-vm.vhd.gz` and upload the `.vhd` as a VDI (Xen Orchestra →
-  Import, or `xe vdi-import`), then create a VM (1–2 vCPU, 2 GB RAM) and attach it as the boot disk.
+  Import, or `xe vdi-import`), then create a VM (1-2 vCPU, 2 GB RAM) and attach it as the boot disk.
 - **KVM / libvirt:** `argus-probe-vm.qcow2` imports directly; the `.vhd` also imports on Hyper-V.
 
-**Give it the enrollment inputs** — either way (in Argus **Add probe → VM**, which also has the
+**Give it the enrollment inputs** - either way (in Argus **Add probe → VM**, which also has the
 keyboard-layout picker):
 
 - **seed CD (zero-touch):** **Download seed ISO** and attach it as a CD/DVD when creating the VM. It's
-  an Argus-owned ISO (label `ARGUSSEED`) read by the first-boot service, so it works on any hypervisor
-  — no cloud-init needed. The VM enrols on first boot with no interaction.
+  an Argus-owned ISO (label `ARGUSSEED`) read by the first-boot service, so it works on any hypervisor -
+  no cloud-init needed. The VM enrols on first boot with no interaction.
 - **first-boot page:** boot with no seed (needs DHCP to be reachable), browse to `http://<vm-ip>/`,
   and paste the enrollment URL + token from the wizard (and pick the keyboard layout). The page
   disappears once the probe enrols.
 
 The probe registers with Argus and appears on the **Probes** page; its break-glass console credential
 is revealed there (the **Console** button). On enrollment the VM also sets its **hostname** to
-`argus-probe-<site>` (e.g. `argus-probe-site5`) — the VM is the probe appliance; the container it runs
+`argus-probe-<site>` (e.g. `argus-probe-site5`) - the VM is the probe appliance; the container it runs
 is the Zabbix proxy (`proxy-<site>`).
 
 **No DHCP?** Turn on **Static IP** in Add probe → VM and fill in the address / prefix / gateway / DNS
-before you download the seed ISO — they're baked into it, and the first-boot service applies them
+before you download the seed ISO - they're baked into it, and the first-boot service applies them
 before enrollment, so the VM comes up on its fixed address with no interaction. (This is seed-only: the
 first-boot page can't collect it, since you'd need an IP to reach the page.) A VM stuck without network
-isn't enrolled yet, so it's recoverable the same way — attach a corrected seed and reboot.
+isn't enrolled yet, so it's recoverable the same way - attach a corrected seed and reboot.
 
 ## Scope / not yet
 
@@ -131,5 +131,5 @@ isn't enrolled yet, so it's recoverable the same way — attach a corrected seed
   Argus drives updates like any other probe - the updater recreates the proxy (and itself) via the
   Engine API. A `systemctl restart argus-probe` (or a reboot) re-pulls `ARGUS_PROBE_TAG`, so pin it in
   `/etc/argus-probe/probe.env` if you don't want a reboot to converge the VM back on latest.
-- **Bare-metal Clonezilla SKU** — the same golden image wrapped in a Clonezilla restore ISO for
+- **Bare-metal Clonezilla SKU** - the same golden image wrapped in a Clonezilla restore ISO for
   appliance installs with no hypervisor. Reuses the first-boot enrollment path. A later §A slice.
