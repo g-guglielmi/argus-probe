@@ -114,6 +114,11 @@ export ZBX_SERVER_HOST="$CORE_HOST"
 export ZBX_PROXYMODE=0
 export ZBX_PROXYOFFLINEBUFFER="${ZBX_PROXYOFFLINEBUFFER:-168}"
 export ZBX_PROXYLOCALBUFFER="${ZBX_PROXYLOCALBUFFER:-0}"
+# ICMP pingers: Zabbix's default is one, and every Base Ping host's checks queue behind it while fping
+# waits out slow or silent devices - a mid-size site already kept it ~60% busy. Five idle pingers cost
+# a few MB and only fork fping when there's work. Zabbix can't scale them at runtime (StartPingers is
+# read at start); an explicit ZBX_STARTPINGERS still wins.
+export ZBX_STARTPINGERS="${ZBX_STARTPINGERS:-5}"
 export ZBX_TLSCONNECT=cert
 export ZBX_TLSACCEPT=cert
 export ZBX_TLSCAFILE="$CA"

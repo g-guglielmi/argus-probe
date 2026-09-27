@@ -21,6 +21,13 @@ listed together newest first, each section headed by its exact release tag:
 ### Probe VM
 - The first-boot setup page links to its source code (AGPL-3.0 section 13); small wording fixes.
 
+## [probe/v7.0.31-r3] - 2026-09-28
+
+### Changed
+- The proxy starts **5 ICMP pingers** instead of Zabbix's default of 1. A single pinger queues every
+  ping check behind it while `fping` waits for slow or silent devices, and a mid-size site already
+  kept it about 60% busy. Idle pingers cost a few MB. Set `ZBX_STARTPINGERS` to override.
+
 ## [probe/v7.0.31-r2] - 2026-09-22
 
 ### Fixed
