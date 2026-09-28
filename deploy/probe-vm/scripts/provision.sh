@@ -37,11 +37,12 @@ install -D -m 0644 "$FILES/argus-os-report.timer"      /etc/systemd/system/argus
 install -D -m 0600 "$FILES/probe.env.example"          /etc/argus-probe/probe.env.example
 install -d -m 0755 /var/lib/argus-probe
 
-echo "==> hardening SSH (keys only; the hypervisor console keeps password login)"
-# The break-glass password is for the console. Over the network a key is required: add one from
-# the console if you want SSH at a site.
+echo "==> hardening SSH (no root login; password login only for the break-glass account)"
+# Password login is off for every account but the break-glass user "argus" (keys still work for
+# all), so the password Argus reveals works over the site VPN when the console isn't at hand, and
+# nothing else on the VM can be guessed at over the network.
 install -d -m 0755 /etc/ssh/sshd_config.d
-printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin no\n' > /etc/ssh/sshd_config.d/10-argus.conf
+printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin no\nMatch User argus\n    PasswordAuthentication yes\n' > /etc/ssh/sshd_config.d/10-argus.conf
 
 # Networking: systemd-networkd DHCPs the primary NIC. cloud-init is purged below, so networkd is the
 # sole network manager - no datasource dependency, no fight over the interface.

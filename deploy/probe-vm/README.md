@@ -49,10 +49,11 @@ machine-id, so clones stay unique.
 The golden image ships with **no login**. On first boot the service generates a per-VM admin user
 **`argus`** (in the `sudo` group; `sudo docker ...` for the containers) with a random password and
 reports it to Argus over the probe check-in channel; Argus stores it **encrypted** and reveals it to
-admins on the **Probes** page (the **Console** button). Use it at the hypervisor console. SSH accepts
-**keys only** (password login is off): to reach a VM over the site VPN, add your public key from the
-console first (`~argus/.ssh/authorized_keys`). The password is cached root-only on the VM and the
-report is retried until it lands, so a brief core outage during enrollment doesn't lose it.
+admins on the **Probes** page (the **Console** button). Use it at the hypervisor console, or over
+SSH once you're on the site VPN (remote sites are outbound-only, so SSH isn't internet-reachable):
+password login is allowed for this one account only, never for root or anything else (keys work for
+all). The password is cached root-only on the VM and the report is retried until it lands, so a
+brief core outage during enrollment doesn't lose it.
 
 The **console keyboard layout** is configurable per-VM (it matters for typing that password at the
 console): pick it in Add-probe → **VM**, or on the first-boot setup page. It's written to
@@ -113,7 +114,10 @@ keyboard-layout picker):
   the network can reach the page, only someone who sees the console can use it), and paste the
   enrollment URL + token from the wizard (and pick the keyboard layout). The enrollment URL must be
   https; a "no HTTPS, lab only" switch allows a plain-http Argus. The page disappears once the probe
-  enrols.
+  enrols. **No console?** Add probe → VM → **Download setup-code ISO** mints a code, shows it to you
+  and puts it on a tiny disk: attach that as a CD/DVD and the VM expects your code instead of
+  printing one (any ISO labelled `ARGUSSEED` with an `argus.env` holding `ARGUS_SETUP_CODE=XXXX-XXXX`
+  does the same: `mkisofs -V ARGUSSEED -o code.iso dir/`).
 
 The probe registers with Argus and appears on the **Probes** page; its break-glass console credential
 is revealed there (the **Console** button). On enrollment the VM also sets its **hostname** to
