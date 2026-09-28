@@ -118,12 +118,6 @@ def valid_token(tok):
     return bool(tok) and bool(TOKEN_RE.fullmatch(tok))
 
 
-def valid_setup_code(code):
-    """A code the operator brought on a disk (no console at hand): the same shape the VM generates."""
-    code = (code or "").strip().upper()
-    return bool(re.fullmatch(r"[A-Z0-9]{4}-?[A-Z0-9]{4}", code))
-
-
 def valid_host(h):
     return not h or bool(HOST_RE.fullmatch(h))
 
@@ -158,8 +152,8 @@ def find_seed_device():
 
 def read_seed_disk():
     """If an Argus seed CD/disk is attached, mount it read-only and read ARGUS.ENV. Returns the parsed
-    KEY=VALUE dict (a full seed carries a token; a "setup code" disk carries only ARGUS_SETUP_CODE)
-    or None. Best-effort - any failure just falls through to the setup page."""
+    KEY=VALUE dict (needs at least a token) or None. Best-effort - any failure just falls through to
+    the setup page."""
     dev = find_seed_device()
     if not dev:
         return None
@@ -176,7 +170,7 @@ def read_seed_disk():
         if not envfile:
             return None
         kv = read_kv(envfile)
-        return kv or None
+        return kv if kv.get("ARGUS_ENROLL_TOKEN") else None
     except Exception:
         return None
     finally:
@@ -666,31 +660,24 @@ def main():
         return 0
     # Zero-touch via an attached seed CD (no cloud-init needed): if one is present and no token has
     # been written yet, adopt its enrollment inputs (and keyboard layout) so this boot enrolls itself.
-    seed_code = ""
     if not already_enrolled():
-        seed = read_seed_disk() or {}
-        if seed.get("ARGUS_ENROLL_TOKEN") and valid_enroll_url(seed.get("ARGUS_ENROLL_URL", ""), allow_http=True) \
+        seed = read_seed_disk()
+        if seed and valid_enroll_url(seed.get("ARGUS_ENROLL_URL", ""), allow_http=True) \
                 and valid_token(seed.get("ARGUS_ENROLL_TOKEN", "")) and valid_host(seed.get("ZBX_SERVER_HOST", "")):
             write_env(seed["ARGUS_ENROLL_URL"], seed["ARGUS_ENROLL_TOKEN"], seed.get("ZBX_SERVER_HOST", ""),
                       insecure=seed["ARGUS_ENROLL_URL"].startswith("http://"))
             apply_keymap(seed.get("ARGUS_KEYMAP", ""))
             apply_static_net(seed)  # no-op unless the seed carried a static IP (no-DHCP sites)
             print("argus-firstboot: adopted enrollment inputs from the attached seed disk")
-        elif valid_setup_code(seed.get("ARGUS_SETUP_CODE", "")):
-            # No console to read a code from: a disk the operator attached carries theirs. Attaching
-            # media is the same proof of hypervisor control as reading the console.
-            c = seed["ARGUS_SETUP_CODE"].strip().upper().replace("-", "")
-            seed_code = c[:4] + "-" + c[4:]
-            print("argus-firstboot: setup code taken from the attached disk")
     httpd = ThreadingHTTPServer(LISTEN, Handler)
     httpd.attempt_since = time.time()
     httpd.submitted = already_enrolled()  # a seed may have written the token already
     httpd.csrf = secrets.token_urlsafe(24)
-    httpd.setup_code = seed_code or gen_setup_code()
+    httpd.setup_code = gen_setup_code()
     httpd.code_failures = 0
     if httpd.submitted:
         start_probe()
-    elif not seed_code:
+    else:
         announce_code(httpd.setup_code)
     threading.Thread(target=monitor, args=(httpd,), daemon=True).start()
     print(f"argus-firstboot: serving setup page on http://{LISTEN[0]}:{LISTEN[1]}/")

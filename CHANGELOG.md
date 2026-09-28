@@ -33,9 +33,7 @@ listed together newest first, each section headed by its exact release tag:
 - **SSH password login is limited to the break-glass account**: off for every other account and for
   root (keys work for all), so the password Argus reveals still works over the site VPN when the
   console isn't at hand, and nothing else on the VM can be guessed at over the network.
-- **No console to read the setup code from?** A disk labelled `ARGUSSEED` with an `argus.env`
-  holding `ARGUS_SETUP_CODE=XXXX-XXXX` supplies your own code; Add probe → VM has a **Download
-  setup-code ISO** button that mints one (core `v0.5.14`).
+- No console to read the setup code from? The seed ISO is the zero-touch path and needs no code.
 - The break-glass user is no longer in the `docker` group (sudo already covers it, and is logged).
 - The page answers with `Cache-Control: no-store` and `X-Frame-Options: DENY`.
 

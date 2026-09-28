@@ -114,10 +114,7 @@ keyboard-layout picker):
   the network can reach the page, only someone who sees the console can use it), and paste the
   enrollment URL + token from the wizard (and pick the keyboard layout). The enrollment URL must be
   https; a "no HTTPS, lab only" switch allows a plain-http Argus. The page disappears once the probe
-  enrols. **No console?** Add probe → VM → **Download setup-code ISO** mints a code, shows it to you
-  and puts it on a tiny disk: attach that as a CD/DVD and the VM expects your code instead of
-  printing one (any ISO labelled `ARGUSSEED` with an `argus.env` holding `ARGUS_SETUP_CODE=XXXX-XXXX`
-  does the same: `mkisofs -V ARGUSSEED -o code.iso dir/`).
+  enrols. **No console to read the code from?** Use the seed ISO: it needs no code at all.
 
 The probe registers with Argus and appears on the **Probes** page; its break-glass console credential
 is revealed there (the **Console** button). On enrollment the VM also sets its **hostname** to
