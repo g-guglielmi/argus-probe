@@ -18,7 +18,24 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
-### Probe VM
+## [probe-vm/v0.3.3] - 2026-09-29
+
+### Security
+- **A setup code guards the first-boot page.** The page is reachable by anyone on the VM's network
+  until the probe enrols, and what it collects decides which server the VM trusts. It now prints an
+  8-character code on the hypervisor console (and the console login banner) and refuses a submission
+  without it; ten wrong codes replace it. The stored token is never shown again on the "change and
+  retry" form, and opening that form no longer stops the running services.
+- **Every value is checked** before it reaches the probe's env file: the enrollment URL must be
+  `https://<argus>/api/enroll` (a "no HTTPS, lab only" switch allows http and passes
+  `ARGUS_ALLOW_INSECURE_CHECKIN=true` to the container), the token and core host must look like a
+  token and a host. A seed disk goes through the same checks.
+- **SSH takes keys only** (`PasswordAuthentication no`, no root login); the break-glass password is
+  for the hypervisor console. Add a key from the console if you want SSH at a site.
+- The break-glass user is no longer in the `docker` group (sudo already covers it, and is logged).
+- The page answers with `Cache-Control: no-store` and `X-Frame-Options: DENY`.
+
+### Changed
 - The first-boot setup page links to its source code (AGPL-3.0 section 13); small wording fixes.
 
 ## [probe/v7.0.31-r4] - 2026-09-28

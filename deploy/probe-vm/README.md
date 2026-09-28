@@ -47,11 +47,11 @@ machine-id, so clones stay unique.
 ## Break-glass console access
 
 The golden image ships with **no login**. On first boot the service generates a per-VM admin user
-**`argus`** (in the `sudo` and `docker` groups, so it can run `docker` without sudo) with a random
-password and reports it to Argus over the probe check-in channel;
-Argus stores it **encrypted** and reveals it to admins on the **Probes** page (the **Console** button).
-Use it at the hypervisor console, or over SSH once you're on the site VPN (remote sites are
-outbound-only, so SSH isn't internet-reachable). The password is cached root-only on the VM and the
+**`argus`** (in the `sudo` group; `sudo docker ...` for the containers) with a random password and
+reports it to Argus over the probe check-in channel; Argus stores it **encrypted** and reveals it to
+admins on the **Probes** page (the **Console** button). Use it at the hypervisor console. SSH accepts
+**keys only** (password login is off): to reach a VM over the site VPN, add your public key from the
+console first (`~argus/.ssh/authorized_keys`). The password is cached root-only on the VM and the
 report is retried until it lands, so a brief core outage during enrollment doesn't lose it.
 
 The **console keyboard layout** is configurable per-VM (it matters for typing that password at the
@@ -109,8 +109,11 @@ keyboard-layout picker):
   an Argus-owned ISO (label `ARGUSSEED`) read by the first-boot service, so it works on any hypervisor -
   no cloud-init needed. The VM enrols on first boot with no interaction.
 - **first-boot page:** boot with no seed (needs DHCP to be reachable), browse to `http://<vm-ip>/`,
-  and paste the enrollment URL + token from the wizard (and pick the keyboard layout). The page
-  disappears once the probe enrols.
+  type the **setup code** the VM prints on its console (the hypervisor's console window; anyone on
+  the network can reach the page, only someone who sees the console can use it), and paste the
+  enrollment URL + token from the wizard (and pick the keyboard layout). The enrollment URL must be
+  https; a "no HTTPS, lab only" switch allows a plain-http Argus. The page disappears once the probe
+  enrols.
 
 The probe registers with Argus and appears on the **Probes** page; its break-glass console credential
 is revealed there (the **Console** button). On enrollment the VM also sets its **hostname** to

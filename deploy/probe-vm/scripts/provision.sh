@@ -37,6 +37,12 @@ install -D -m 0644 "$FILES/argus-os-report.timer"      /etc/systemd/system/argus
 install -D -m 0600 "$FILES/probe.env.example"          /etc/argus-probe/probe.env.example
 install -d -m 0755 /var/lib/argus-probe
 
+echo "==> hardening SSH (keys only; the hypervisor console keeps password login)"
+# The break-glass password is for the console. Over the network a key is required: add one from
+# the console if you want SSH at a site.
+install -d -m 0755 /etc/ssh/sshd_config.d
+printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin no\n' > /etc/ssh/sshd_config.d/10-argus.conf
+
 # Networking: systemd-networkd DHCPs the primary NIC. cloud-init is purged below, so networkd is the
 # sole network manager - no datasource dependency, no fight over the interface.
 install -D -m 0644 "$FILES/10-argus-dhcp.network"      /etc/systemd/network/10-argus-dhcp.network

@@ -13,6 +13,7 @@ see whether it actually enrolled or why it failed - not an optimistic "enrolling
 Stdlib only. The setup page serves only until the probe is enrolled, then this service disables
 itself so it never runs again.
 """
+import hmac
 import html
 import json
 import os
@@ -25,7 +26,7 @@ import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 ENV_PATH = "/etc/argus-probe/probe.env"
 ENROLL_DIR = "/var/lib/argus-probe/enroll"
@@ -52,6 +53,73 @@ SEED_MOUNT = "/run/argus-seed"
 BG_USER = "argus"
 BG_SECRET_FILE = "/var/lib/argus-probe/break-glass.secret"
 BG_DONE = "/var/lib/argus-probe/break-glass.reported"
+
+# The setup page is reachable by anyone on the VM's network until the probe is enrolled, and what it
+# collects decides which server this VM trusts. So a submission must carry a one-time SETUP CODE that
+# only someone at the hypervisor console can read: it is printed there (and on the console login
+# banner) when the page starts serving. Ten wrong codes replace it with a fresh one.
+ISSUE_FILE = "/etc/issue.d/argus-setup.issue"
+CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L: it's typed from a console
+CODE_MAX_FAILURES = 10
+
+
+def gen_setup_code():
+    raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
+    return raw[:4] + "-" + raw[4:]
+
+
+def announce_code(code):
+    """Show the setup code where only the console can see it: the login banner (/etc/issue.d, read
+    by agetty at each prompt) and the console itself, right now."""
+    ips = [ip for ip in sh("hostname", "-I").split() if not ip.startswith("127.")]
+    where = ips[0] if ips else "<this VM's address>"
+    text = ("\n  Argus probe setup: open http://%s/ in a browser on this network\n"
+            "  and enter the setup code  %s\n\n" % (where, code))
+    try:
+        os.makedirs(os.path.dirname(ISSUE_FILE), exist_ok=True)
+        with open(ISSUE_FILE, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except Exception:
+        pass
+    for dev in ("/dev/console", "/dev/tty1"):
+        try:
+            with open(dev, "w") as fh:
+                fh.write(text)
+        except Exception:
+            pass
+    print("argus-firstboot: setup code %s (shown on the console)" % code, flush=True)
+
+
+def clear_code_banner():
+    try:
+        os.remove(ISSUE_FILE)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+
+# What the form (or a seed disk) may hand to the probe container. These values end up in an env file
+# the container reads and in the address the proxy dials, so each has a shape it must fit.
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+HOST_RE = re.compile(r"^[A-Za-z0-9.:_\[\]-]{1,253}$")
+
+
+def valid_enroll_url(url, allow_http=False):
+    if not url or len(url) > 512 or re.search(r"[\s\x00-\x1f\x7f'\"\\]", url):
+        return False
+    u = urlparse(url)
+    if u.scheme == "https" or (u.scheme == "http" and allow_http):
+        return bool(u.netloc) and u.path.endswith("/api/enroll")
+    return False
+
+
+def valid_token(tok):
+    return bool(tok) and bool(TOKEN_RE.fullmatch(tok))
+
+
+def valid_host(h):
+    return not h or bool(HOST_RE.fullmatch(h))
 
 
 def read_kv(path):
@@ -193,10 +261,8 @@ def ensure_break_glass():
             pw = ""
     if not pw:
         pw = gen_password()
+        # sudo is the whole privilege; a docker-group membership would be a second, unlogged root.
         subprocess.run(["useradd", "-m", "-s", "/bin/bash", "-G", "sudo", BG_USER], check=False)
-        # Also add it to the docker group so break-glass can run docker without sudo (best-effort - the
-        # group exists once Docker is installed). This grants no privilege it doesn't already have via sudo.
-        subprocess.run(["usermod", "-aG", "docker", BG_USER], check=False)
         subprocess.run(["chpasswd"], input="%s:%s" % (BG_USER, pw), text=True, check=False)
         old = os.umask(0o077)
         try:
@@ -224,10 +290,13 @@ def ensure_break_glass():
         pass  # retry next boot
 
 
-def write_env(enroll_url, enroll_token, core_host):
+def write_env(enroll_url, enroll_token, core_host, insecure=False):
     lines = [f"ARGUS_ENROLL_URL={enroll_url}", f"ARGUS_ENROLL_TOKEN={enroll_token}"]
     if core_host:
         lines.append(f"ZBX_SERVER_HOST={core_host}")
+    if insecure:
+        # A plain-http Argus (a lab): the container refuses http check-in unless told so.
+        lines.append("ARGUS_ALLOW_INSECURE_CHECKIN=true")
     os.makedirs("/etc/argus-probe", exist_ok=True)
     tmp = ENV_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -368,13 +437,19 @@ FORM = """
   (the token is shown once). The probe enrols itself and starts monitoring.</p>
   {error}
   <form method="post">
+    <input type="hidden" name="csrf" value="{csrf}">
+    <label for="s">Setup code</label>
+    <input id="s" name="setup_code" placeholder="XXXX-XXXX" autocomplete="off" required>
+    <div class="sub">Shown on this VM's console (the hypervisor's console window), so only someone who can see it can enrol this probe.</div>
     <label for="u">Enrollment URL</label>
     <input id="u" name="enroll_url" placeholder="https://monitoring.example.com/api/enroll" value="{url}" required>
     <label for="t">Enrollment token</label>
-    <input id="t" name="enroll_token" placeholder="the single-use token" value="{token}" required>
+    <input id="t" name="enroll_token" placeholder="the single-use token" autocomplete="off" required>
     <label for="c">Core host <span style="color:var(--faint);font-weight:400">(optional)</span></label>
     <input id="c" name="core_host" placeholder="usually leave blank" value="{core}">
     <div class="sub">Leave blank - Argus fills this in. Only set it if the probe can't reach the server after enrolling.</div>
+    <label style="display:flex;gap:.5rem;align-items:center;font-weight:400"><input type="checkbox" name="insecure" value="1" style="width:auto" {insecure}> This Argus has no HTTPS (lab only)</label>
+    <div class="sub">Allows an http:// enrollment URL. The probe's token then travels in clear; never for a production core.</div>
     <label for="k">Console keyboard layout</label>
     <select id="k" name="keymap">
       <option value="us">US English</option>
@@ -473,25 +548,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
         self.end_headers()
         self.wfile.write(data)
 
     def _form(self, error="", env=None):
+        # The stored token is never shown again; the URL and core host are, so a typo is easy to fix.
         env = env or {}
-        return page(FORM.format(error=error,
+        return page(FORM.format(error=error, csrf=html.escape(self.server.csrf),
                                 url=html.escape(env.get("ARGUS_ENROLL_URL", "")),
-                                token=html.escape(env.get("ARGUS_ENROLL_TOKEN", "")),
-                                core=html.escape(env.get("ZBX_SERVER_HOST", ""))))
+                                core=html.escape(env.get("ZBX_SERVER_HOST", "")),
+                                insecure="checked" if env.get("ARGUS_ALLOW_INSECURE_CHECKIN") == "true" else ""))
 
     def do_GET(self):
         if self.path.startswith("/status"):
             self._send(json.dumps(enroll_status(self.server.attempt_since)), ctype="application/json")
             return
         if self.path.startswith("/?edit"):
-            # After a failure: stop the probe (and its updater) retrying the bad values and reopen the
-            # form, prefilled with what was entered so only the wrong field needs fixing.
-            subprocess.run(["systemctl", "stop", UPDATER_SERVICE], check=False)
-            subprocess.run(["systemctl", "stop", PROBE_SERVICE], check=False)
+            # After a failure: reopen the form prefilled with the URL and core host (not the token) so
+            # only the wrong field needs fixing. The running attempt is replaced when a valid
+            # submission arrives, not by opening this page.
             self.server.submitted = False
             self._send(self._form(env=read_kv(ENV_PATH)))
             return
@@ -500,18 +577,52 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(self._form())
 
+    def _code_ok(self, form):
+        """The setup code check: constant-time, counted, replaced after too many misses."""
+        given = (form.get("setup_code", [""])[0] or "").strip().upper().replace(" ", "")
+        want = self.server.setup_code
+        if hmac.compare_digest(given, want) or hmac.compare_digest(given, want.replace("-", "")):
+            self.server.code_failures = 0
+            return True
+        self.server.code_failures += 1
+        time.sleep(1)
+        if self.server.code_failures >= CODE_MAX_FAILURES:
+            self.server.setup_code = gen_setup_code()
+            self.server.code_failures = 0
+            announce_code(self.server.setup_code)
+        return False
+
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        form = parse_qs(self.rfile.read(length).decode("utf-8"))
+        length = min(int(self.headers.get("Content-Length", 0) or 0), 16384)
+        form = parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
         url = form.get("enroll_url", [""])[0].strip()
         token = form.get("enroll_token", [""])[0].strip()
         core = form.get("core_host", [""])[0].strip()
-        if not url or not token:
-            err = '<p class="err">Enrollment URL and token are both required.</p>'
-            self._send(self._form(error=err, env={"ARGUS_ENROLL_URL": url, "ARGUS_ENROLL_TOKEN": token,
-                                                  "ZBX_SERVER_HOST": core}), status=400)
+        insecure = form.get("insecure", [""])[0] == "1"
+        keep = {"ARGUS_ENROLL_URL": url, "ZBX_SERVER_HOST": core, "ARGUS_ALLOW_INSECURE_CHECKIN": "true" if insecure else ""}
+
+        def bad(msg, status=400):
+            self._send(self._form(error='<p class="err">%s</p>' % html.escape(msg), env=keep), status=status)
+
+        if not hmac.compare_digest(form.get("csrf", [""])[0], self.server.csrf):
+            bad("This form is stale; reload the page and try again.")
             return
-        write_env(url, token, core)
+        if not self._code_ok(form):
+            bad("That setup code isn't right. It's shown on this VM's console.", status=403)
+            return
+        if not url or not token:
+            bad("Enrollment URL and token are both required.")
+            return
+        if not valid_enroll_url(url, allow_http=insecure):
+            bad("The enrollment URL must be https://<argus>/api/enroll (tick the lab option for plain http).")
+            return
+        if not valid_token(token):
+            bad("That doesn't look like an enrollment token.")
+            return
+        if not valid_host(core):
+            bad("Core host must be a host name or address, optionally with :port.")
+            return
+        write_env(url, token, core, insecure=insecure)
         apply_keymap(form.get("keymap", ["us"])[0])
         self.server.attempt_since = time.time()  # scope status polling to this attempt
         start_probe()
@@ -529,6 +640,7 @@ def monitor(httpd):
     while True:
         time.sleep(3)
         if os.path.exists(CERT):
+            clear_code_banner()
             apply_hostname()
             ensure_break_glass()
             time.sleep(15)
@@ -550,19 +662,27 @@ def main():
     # been written yet, adopt its enrollment inputs (and keyboard layout) so this boot enrolls itself.
     if not already_enrolled():
         seed = read_seed_disk()
-        if seed and seed.get("ARGUS_ENROLL_URL") and seed.get("ARGUS_ENROLL_TOKEN"):
-            write_env(seed["ARGUS_ENROLL_URL"], seed["ARGUS_ENROLL_TOKEN"], seed.get("ZBX_SERVER_HOST", ""))
+        if seed and valid_enroll_url(seed.get("ARGUS_ENROLL_URL", ""), allow_http=True) \
+                and valid_token(seed.get("ARGUS_ENROLL_TOKEN", "")) and valid_host(seed.get("ZBX_SERVER_HOST", "")):
+            write_env(seed["ARGUS_ENROLL_URL"], seed["ARGUS_ENROLL_TOKEN"], seed.get("ZBX_SERVER_HOST", ""),
+                      insecure=seed["ARGUS_ENROLL_URL"].startswith("http://"))
             apply_keymap(seed.get("ARGUS_KEYMAP", ""))
             apply_static_net(seed)  # no-op unless the seed carried a static IP (no-DHCP sites)
             print("argus-firstboot: adopted enrollment inputs from the attached seed disk")
     httpd = ThreadingHTTPServer(LISTEN, Handler)
     httpd.attempt_since = time.time()
     httpd.submitted = already_enrolled()  # a seed may have written the token already
+    httpd.csrf = secrets.token_urlsafe(24)
+    httpd.setup_code = gen_setup_code()
+    httpd.code_failures = 0
     if httpd.submitted:
         start_probe()
+    else:
+        announce_code(httpd.setup_code)
     threading.Thread(target=monitor, args=(httpd,), daemon=True).start()
     print(f"argus-firstboot: serving setup page on http://{LISTEN[0]}:{LISTEN[1]}/")
     httpd.serve_forever()
+    clear_code_banner()
     return 0
 
 
