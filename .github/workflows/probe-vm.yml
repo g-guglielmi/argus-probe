@@ -16,8 +16,8 @@ on:
 # validate job below is cheap, so running it on every main push is an acceptable trade for reliable
 # tag-triggered releases.
 
-permissions:
-  contents: write   # publish the Release + upload image assets on a tag build
+# Permissions are granted per job: only the tag build publishes a Release.
+permissions: {}
 
 defaults:
   run:
@@ -27,20 +27,24 @@ jobs:
   # Cheap gate on every touch: the template parses and its plugins resolve. No VM is built.
   validate:
     if: github.ref_type != 'tag'
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-packer@main
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789 # v3.4.0
       - run: packer init argus-probe-vm.pkr.hcl
       - run: packer validate argus-probe-vm.pkr.hcl
 
   # Full build: only on manual dispatch or a probe-vm/v* tag.
   build:
     if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    permissions:
+      contents: write   # publish the Release + upload image assets on a tag build
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # A tag build publishes the CHANGELOG.md section headed with the exact tag as the Release
       # notes. Checked first, so a missing section fails in seconds instead of after the VM build.
@@ -79,7 +83,7 @@ jobs:
           # libxml2-utils provides xmllint to validate the generated OVF descriptor.
           sudo apt-get install -y qemu-system-x86 qemu-utils xorriso libxml2-utils
 
-      - uses: hashicorp/setup-packer@main
+      - uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789 # v3.4.0
 
       - name: Build the golden image
         run: |
@@ -98,7 +102,7 @@ jobs:
         run: bash scripts/make-ova.sh output/argus-probe-vm.qcow2 output
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: argus-probe-vm
           path: |
@@ -120,7 +124,7 @@ jobs:
 
       - name: Publish Release (tag builds only)
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             deploy/probe-vm/output/argus-probe-vm.ova

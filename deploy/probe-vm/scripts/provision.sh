@@ -16,12 +16,21 @@ echo "==> installing base packages"
 apt-get update
 # systemd-resolved: DHCP DNS under networkd. kbd: console keymaps + loadkeys (configurable keyboard
 # layout). sudo + openssh-server: break-glass admin access (per-VM user, console + SSH over the VPN).
-apt-get install -y --no-install-recommends ca-certificates curl python3 systemd-resolved kbd sudo openssh-server unattended-upgrades needrestart
+apt-get install -y --no-install-recommends ca-certificates curl gnupg python3 systemd-resolved kbd sudo openssh-server unattended-upgrades needrestart
 
-echo "==> installing Docker Engine"
-# Official convenience script: adds Docker's apt repo and installs docker-ce. Pinned enough for an
-# appliance; the container itself is what carries the monitoring logic.
-curl -fsSL https://get.docker.com | sh
+echo "==> installing Docker Engine (Docker's apt repository, signing key pinned by fingerprint)"
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+DOCKER_FPR=$(gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc | awk -F: '/^fpr/{print $10; exit}')
+if [ "$DOCKER_FPR" != "9DC858229FC7DD38854AE2D88D81803C0EBFCD88" ]; then
+  echo "Docker apt signing key fingerprint mismatch: $DOCKER_FPR" >&2
+  exit 1
+fi
+chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  > /etc/apt/sources.list.d/docker.list
+apt-get update
+apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io
 systemctl enable docker
 
 echo "==> installing argus-probe units and files"

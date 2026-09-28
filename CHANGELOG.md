@@ -18,6 +18,14 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+### Probe VM
+- Docker is installed from Docker's apt repository with the signing key's fingerprint pinned, instead
+  of the `get.docker.com` script.
+
+### CI
+- Actions pinned to commits, permissions granted per job, provenance and SBOM attestations on the
+  probe image; `:latest` and a Release are only ever produced from `main`.
+
 ## [probe-vm/v0.3.3] - 2026-09-29
 
 ### Security
