@@ -20,6 +20,34 @@ CRT="$CERTS/proxy.crt"
 KEY="$CERTS/proxy.key"
 META="$CERTS/proxy.env"
 
+# proxy.env is data, never code. Its values come from Argus over the network (the enroll and
+# check-in responses), so they are read one key at a time and checked against the shape each one
+# must have before they are used or written back. A value that doesn't fit is dropped with a note,
+# not executed and not fatal: the proxy keeps the last good value and keeps running.
+read_kv() { [ -f "$META" ] && sed -n "s/^$1=//p" "$META" | head -n1; }
+valid_name()  { case "$1" in ''|*[!A-Za-z0-9._-]*) return 1;; esac; }
+valid_host()  { case "$1" in ''|*[!]A-Za-z0-9.:_[-]*) return 1;; esac; }
+valid_token() { case "$1" in ''|*[!A-Za-z0-9._-]*) return 1;; esac; }
+# The check-in carries the probe's long-lived token and brings back the core host it will dial, so
+# it goes over https; plain http only when ARGUS_ALLOW_INSECURE_CHECKIN=true says so (a lab).
+valid_url() {
+  [ -n "$1" ] || return 1
+  printf '%s' "$1" | grep -q '[^A-Za-z0-9.:/_%?=&-]' && return 1
+  case "$1" in
+    https://*) return 0;;
+    http://*) [ "${ARGUS_ALLOW_INSECURE_CHECKIN:-}" = "true" ] && return 0
+              echo "argus-probe: refusing the plain-http check-in URL $1 (set ARGUS_ALLOW_INSECURE_CHECKIN=true to allow it)" >&2; return 1;;
+    *) return 1;;
+  esac
+}
+# drop VAR LABEL - clear a value that failed its check, saying so.
+drop() { echo "argus-probe: ignoring an unexpected $2 value from Argus" >&2; eval "$1=''"; }
+write_meta() {
+  printf 'PROXY_NAME=%s\nCORE_HOST=%s\nPROBE_TOKEN=%s\nCHECKIN_URL=%s\n' \
+    "${PROXY_NAME:-}" "${CORE_HOST:-}" "${PROBE_TOKEN:-}" "${CHECKIN_URL:-}" > "$META"
+  chmod 600 "$META" 2>/dev/null || true
+}
+
 mkdir -p "$CERTS"
 if [ ! -f "$CRT" ] || [ ! -f "$KEY" ] || [ ! -f "$CA" ]; then
   : "${ARGUS_ENROLL_URL:?set ARGUS_ENROLL_URL to https://<argus-host>/api/enroll}"
@@ -42,23 +70,45 @@ if [ ! -f "$CRT" ] || [ ! -f "$KEY" ] || [ ! -f "$CA" ]; then
   echo "$RESP" | jq -er '.certificate' > "$CRT"
   echo "$RESP" | jq -er '.ca' > "$CA"
   PROXY_NAME=$(echo "$RESP" | jq -er '.proxy_name')
+  if ! valid_name "$PROXY_NAME"; then
+    echo "argus-probe: enrollment returned an unusable proxy name" >&2
+    rm -f "$KEY" "$CRT" "$CA"
+    exit 1
+  fi
   CORE_HOST=$(echo "$RESP" | jq -r '.core_host // ""')
   # Long-lived check-in credential (fleet updates): report our version + read the fleet target.
   # Absent on older Argus servers - the probe simply won't participate in fleet updates then.
   PROBE_TOKEN=$(echo "$RESP" | jq -r '.probe_token // ""')
   CHECKIN_URL=$(echo "$RESP" | jq -r '.checkin_url // ""')
-  printf 'PROXY_NAME=%s\nCORE_HOST=%s\nPROBE_TOKEN=%s\nCHECKIN_URL=%s\n' \
-    "$PROXY_NAME" "$CORE_HOST" "$PROBE_TOKEN" "$CHECKIN_URL" > "$META"
-  chmod 600 "$KEY" "$META"
+  [ -z "$CORE_HOST" ] || valid_host "$CORE_HOST" || drop CORE_HOST "core host"
+  [ -z "$PROBE_TOKEN" ] || valid_token "$PROBE_TOKEN" || drop PROBE_TOKEN "token"
+  [ -z "$CHECKIN_URL" ] || valid_url "$CHECKIN_URL" || CHECKIN_URL=""
+  write_meta
+  chmod 600 "$KEY"
   echo "argus-probe: enrolled as $PROXY_NAME (core: ${CORE_HOST:-<from ZBX_SERVER_HOST>})"
 fi
 
 # The stock entrypoint runs as root then drops to the zabbix user (and fixes the spool ownership
-# itself); make sure the enrolled certs we wrote are readable by it too. Best-effort.
-chown -R zabbix:zabbix "$CERTS" 2>/dev/null || chown -R 1997:1997 "$CERTS" 2>/dev/null || true
+# itself); make sure the enrolled certs we wrote are readable by it too. Only the certificates and
+# the key: the directory and proxy.env stay root's, so the proxy process (which never needs them)
+# can't rewrite what this script and the updater sidecar read at their next start. Best-effort.
+chown root:root "$CERTS" 2>/dev/null || true
+chmod 755 "$CERTS" 2>/dev/null || true
+chown zabbix:zabbix "$CA" "$CRT" "$KEY" 2>/dev/null || chown 1997:1997 "$CA" "$CRT" "$KEY" 2>/dev/null || true
+chown root:root "$META" 2>/dev/null || true
+chmod 600 "$META" 2>/dev/null || true
 
-# shellcheck disable=SC1090
-. "$META"
+PROXY_NAME=$(read_kv PROXY_NAME)
+CORE_HOST=$(read_kv CORE_HOST)
+PROBE_TOKEN=$(read_kv PROBE_TOKEN)
+CHECKIN_URL=$(read_kv CHECKIN_URL)
+if ! valid_name "$PROXY_NAME"; then
+  echo "argus-probe: $META has no usable PROXY_NAME - re-enrol this probe (clear the enroll dir and run with a new token)" >&2
+  exit 1
+fi
+[ -z "$CORE_HOST" ] || valid_host "$CORE_HOST" || drop CORE_HOST "core host"
+[ -z "$PROBE_TOKEN" ] || valid_token "$PROBE_TOKEN" || drop PROBE_TOKEN "token"
+[ -z "$CHECKIN_URL" ] || valid_url "$CHECKIN_URL" || CHECKIN_URL=""
 
 # --- fleet check-in credential (resolved here, while CORE_HOST still holds the enrolled value) ---
 # A probe enrolled before fleet updates has no token in proxy.env; supply it once as
@@ -66,15 +116,18 @@ chown -R zabbix:zabbix "$CERTS" 2>/dev/null || chown -R 1997:1997 "$CERTS" 2>/de
 # rotate it) and is SAVED to proxy.env - so you can remove the env var on later runs and reporting
 # keeps working. The check-in URL is derived from the enroll URL when not given.
 PRIOR_TOKEN="${PROBE_TOKEN:-}"
-if [ -n "${ARGUS_PROBE_TOKEN:-}" ]; then PROBE_TOKEN="$ARGUS_PROBE_TOKEN"; fi
-if [ -n "${ARGUS_CHECKIN_URL:-}" ]; then CHECKIN_URL="$ARGUS_CHECKIN_URL"; fi
+if [ -n "${ARGUS_PROBE_TOKEN:-}" ]; then
+  if valid_token "$ARGUS_PROBE_TOKEN"; then PROBE_TOKEN="$ARGUS_PROBE_TOKEN"; else echo "argus-probe: ARGUS_PROBE_TOKEN doesn't look like a token - ignored" >&2; fi
+fi
+if [ -n "${ARGUS_CHECKIN_URL:-}" ]; then
+  if valid_url "$ARGUS_CHECKIN_URL"; then CHECKIN_URL="$ARGUS_CHECKIN_URL"; else echo "argus-probe: ARGUS_CHECKIN_URL ignored" >&2; fi
+fi
 if [ -z "${CHECKIN_URL:-}" ] && [ -n "${ARGUS_ENROLL_URL:-}" ]; then
-  CHECKIN_URL=$(printf '%s' "$ARGUS_ENROLL_URL" | sed 's#/api/enroll#/api/probes/checkin#')
+  _derived=$(printf '%s' "$ARGUS_ENROLL_URL" | sed 's#/api/enroll#/api/probes/checkin#')
+  if valid_url "$_derived"; then CHECKIN_URL="$_derived"; fi
 fi
 if [ -n "${PROBE_TOKEN:-}" ] && [ "${PROBE_TOKEN:-}" != "$PRIOR_TOKEN" ]; then
-  printf 'PROXY_NAME=%s\nCORE_HOST=%s\nPROBE_TOKEN=%s\nCHECKIN_URL=%s\n' \
-    "${PROXY_NAME:-}" "${CORE_HOST:-}" "$PROBE_TOKEN" "${CHECKIN_URL:-}" > "$META"
-  chmod 600 "$META" 2>/dev/null || true
+  write_meta
   echo "argus-probe: check-in credential saved to the data volume - you can remove ARGUS_PROBE_TOKEN now"
 fi
 
@@ -92,12 +145,14 @@ if [ -z "${ZBX_SERVER_HOST:-}" ] && [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN
     -d "$(jq -nc --arg v "$PROBE_VERSION" '{version:$v}')" \
     "$CHECKIN_URL" 2>/dev/null || true)
   NEW_HOST=$(printf '%s' "$SYNC" | jq -r '.core_host // ""' 2>/dev/null || true)
+  if [ -n "$NEW_HOST" ] && ! valid_host "$NEW_HOST"; then
+    echo "argus-probe: ignoring an unexpected core host value from Argus (keeping ${CORE_HOST:-<unset>})" >&2
+    NEW_HOST=""
+  fi
   if [ -n "$NEW_HOST" ] && [ "$NEW_HOST" != "${CORE_HOST:-}" ]; then
     echo "argus-probe: core host updated by Argus: ${CORE_HOST:-<unset>} -> $NEW_HOST"
     CORE_HOST="$NEW_HOST"
-    printf 'PROXY_NAME=%s\nCORE_HOST=%s\nPROBE_TOKEN=%s\nCHECKIN_URL=%s\n' \
-      "${PROXY_NAME:-}" "$CORE_HOST" "${PROBE_TOKEN:-}" "${CHECKIN_URL:-}" > "$META"
-    chmod 600 "$META" 2>/dev/null || true
+    write_meta
   fi
 fi
 
@@ -154,6 +209,7 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
     JOBFILE="$CERTS/scanjob.json"
     SWLOCK="$CERTS/unifisweep.lock"
     SWJOBFILE="$CERTS/sweepjob.json"
+    umask 077   # a job file carries an SNMP community or a controller key
     while true; do
       RESP=$(curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \

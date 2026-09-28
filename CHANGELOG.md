@@ -21,6 +21,23 @@ listed together newest first, each section headed by its exact release tag:
 ### Probe VM
 - The first-boot setup page links to its source code (AGPL-3.0 section 13); small wording fixes.
 
+## [probe/v7.0.31-r4] - 2026-09-28
+
+### Security
+- `proxy.env` (the probe's saved enrollment: proxy name, core host, check-in token and URL) is
+  read as data, never sourced as shell. Its values come from Argus over the network, so each is
+  checked against the shape it must have (a host, a token, a URL) before it is used or written
+  back; a value that doesn't fit is dropped with a note and the last good one kept. Before, a
+  crafted core host in a check-in response was executed by the entrypoint as root.
+- The enrollment directory and `proxy.env` stay owned by root; only the certificates and the key
+  are handed to the zabbix user, which never needs the rest. So the proxy process can't rewrite
+  what this entrypoint (and the updater sidecar, which reads the same file) run with.
+- The check-in URL must be https. A plain-http URL is refused, with a message, unless
+  `ARGUS_ALLOW_INSECURE_CHECKIN=true` is set for a lab; the proxy itself keeps running either way,
+  only the check-in (fleet updates, scans) is off.
+- The scan and sweep job files (an SNMP community, a controller key) are created readable by their
+  owner only.
+
 ## [probe/v7.0.31-r3] - 2026-09-28
 
 ### Changed
