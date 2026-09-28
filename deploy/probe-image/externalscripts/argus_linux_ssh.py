@@ -25,13 +25,16 @@
 #   user      - SSH login user (a read-only account is enough; default "root")
 #   port      - SSH port (default 22)
 #   auth      - "key" or "password" (default "key")
-#   password  - the SSH password, for auth=password (passed to sshpass via the environment, never argv)
+#   password  - the SSH password, for auth=password. Zabbix passes it to THIS script as an argument
+#               (visible to root on the collector); ssh itself never sees it on argv: sshpass reads
+#               it from the environment.
 #   keyfile   - path ON THIS COLLECTOR to the private key, for auth=key
 #
 # A connection/auth/parse failure is NOT an error: it prints reachable=0 so the template's down
 # trigger fires (max(linux.ssh.reachable,#3)=0) instead of the items going unsupported. Only bad
 # arguments exit non-zero.
 import sys
+import re
 import os
 import json
 import subprocess
@@ -91,14 +94,14 @@ def ssh_command(host, user, port, auth, keyfile):
         return ["sshpass", "-e", "ssh",
                 "-o", "PubkeyAuthentication=no",
                 "-o", "PreferredAuthentications=password,keyboard-interactive"] + \
-            common + [target, REMOTE]
+            common + ["--", target, REMOTE]
     # Key auth is genuinely non-interactive, so BatchMode=yes here fails fast instead of ever prompting.
     return ["ssh",
             "-i", keyfile,
             "-o", "BatchMode=yes",
             "-o", "PasswordAuthentication=no",
             "-o", "PreferredAuthentications=publickey"] + \
-        common + [target, REMOTE]
+        common + ["--", target, REMOTE]
 
 
 def known_hosts_path():
@@ -208,6 +211,18 @@ def main():
     auth = (sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else "key").lower()
     passwd = sys.argv[5] if len(sys.argv) > 5 else ""
     keyfile = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else "/var/lib/zabbix/ssh/argus_id"
+    # The values are macros an Argus admin typed; they become ssh arguments here, so they must be a
+    # login name, a port and a key inside the collector's ssh dir - never something ssh would parse
+    # as an option or a path it would open elsewhere. (Argus validates them too; this is the last line.)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}", user) or not re.fullmatch(r"[A-Za-z0-9.:_\[\]-]{1,253}", host):
+        sys.stderr.write("argus_linux_ssh.py: refusing an unexpected user or host value\n")
+        sys.exit(1)
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        sys.stderr.write("argus_linux_ssh.py: port must be 1-65535\n")
+        sys.exit(1)
+    if not os.path.realpath(keyfile).startswith("/var/lib/zabbix/ssh/"):
+        sys.stderr.write("argus_linux_ssh.py: the key must live under /var/lib/zabbix/ssh/\n")
+        sys.exit(1)
 
     cmd = ssh_command(host, user, port, auth, keyfile)
     env = dict(os.environ)

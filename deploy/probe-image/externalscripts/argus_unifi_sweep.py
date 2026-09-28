@@ -33,39 +33,85 @@ import urllib.request
 
 TIMEOUT = 30
 
+# --- TLS policy -------------------------------------------------------------------------------
+# How a target's certificate is checked: "verify" (system CA store), "pin" (the leaf certificate's
+# SHA-256 must equal a known fingerprint), "ignore" (no check). A pinned connection compares the
+# certificate right after the handshake, on the very socket the request uses.
+import hashlib
+import http.client
 
-def get_json(base, prefix, path, key):
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    pin = ""
+
+    def connect(self):
+        super().connect()
+        got = hashlib.sha256(self.sock.getpeercert(binary_form=True)).hexdigest()
+        if got != self.pin:
+            self.close()
+            raise ssl.SSLCertVerificationError("certificate fingerprint mismatch (presented %s)" % got)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pin):
+        super().__init__(context=ssl._create_unverified_context())
+        self._pin = pin
+
+    def https_open(self, req):
+        pin = self._pin
+
+        def factory(host, **kw):
+            c = _PinnedHTTPSConnection(host, **kw)
+            c.pin = pin
+            return c
+        return self.do_open(factory, req, context=self._context)
+
+
+def tls_opener(mode, fingerprint=""):
+    """An opener for urllib.request that applies the policy; mode "" means verify."""
+    mode = (mode or "verify").strip().lower()
+    fp = "".join(ch for ch in (fingerprint or "").lower() if ch in "0123456789abcdef")
+    if mode == "ignore":
+        return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+    if mode == "pin" and len(fp) == 64:
+        return urllib.request.build_opener(_PinnedHTTPSHandler(fp))
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+
+
+def get_json(opener, base, prefix, path, key):
     req = urllib.request.Request(base + prefix + path,
                                  headers={"X-API-KEY": key, "Accept": "application/json"})
-    ctx = ssl._create_unverified_context()
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT, context=ctx) as resp:
+        with opener.open(req, timeout=TIMEOUT) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise ValueError("the controller rejected the API key (HTTP %d)" % e.code)
         raise
+    except ssl.SSLCertVerificationError as e:
+        raise ValueError("the controller's certificate failed the check: %s" % e)
 
 
-def sweep(base, key):
+def sweep(base, key, tls="", fingerprint=""):
     base = (base or "").strip().rstrip("/")
     if not base:
         raise ValueError("controller URL is empty")
+    opener = tls_opener(tls, fingerprint)
     prefix = "/proxy/network"
     try:
-        sites = get_json(base, prefix, "/api/self/sites", key)
+        sites = get_json(opener, base, prefix, "/api/self/sites", key)
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
         prefix = ""  # plain self-hosted controller: no UniFi OS proxy prefix
-        sites = get_json(base, prefix, "/api/self/sites", key)
+        sites = get_json(opener, base, prefix, "/api/self/sites", key)
     if not (sites.get("data") or []):
         raise ValueError("the controller reported no sites")
     hosts = []
     for site in sites["data"]:
         name = site.get("name") or "default"
         desc = site.get("desc") or ""
-        devs = get_json(base, prefix, "/api/s/%s/stat/device" % name, key)
+        devs = get_json(opener, base, prefix, "/api/s/%s/stat/device" % name, key)
         for d in devs.get("data") or []:
             # Prefer lan_ip: for the gateway itself "ip" is the WAN address, and monitoring
             # (plus the already-monitored dedupe) wants the LAN one. Switches/APs carry "ip".
@@ -126,7 +172,7 @@ def main():
         url = checkin.rsplit("/", 1)[0] + "/scan-results"  # .../api/probes/checkin -> .../scan-results
         body = {"job_id": int(job.get("id") or 0), "error": "", "hosts": []}
         try:
-            out = sweep(job.get("url") or "", job.get("key") or "")
+            out = sweep(job.get("url") or "", job.get("key") or "", job.get("tls") or "", job.get("fingerprint") or "")
             body["hosts"] = out["hosts"]
         except Exception as e:  # an unreachable controller etc. must still complete the job on core
             body["error"] = str(e)[:200]

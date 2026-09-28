@@ -18,6 +18,22 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r5] - 2026-09-29
+
+### Security
+- **Controller certificates are checked** in scans and sweeps as the controller's saved policy
+  says (Argus `v0.5.14`+ hands it out with the job): verify against the CA store, pin a SHA-256
+  fingerprint (compared on the very connection each request uses), or ignore. An older Argus sends
+  no policy and the scripts verify against the CA store, so a self-signed console then needs its
+  certificate pinned or ignored in Argus.
+- **XCP-NG collector:** a sixth argument (`{$XCP.TLS}`: pin / verify / ignore, default pin) decides
+  how the XAPI certificate is checked. *pin* trusts it on first contact and remembers its SHA-256
+  under `/var/lib/zabbix/argus-pins/`; a change is refused and reported as `tls_error` with
+  `reachable=0`.
+- **Linux-by-SSH collector:** refuses a login name that would read as an ssh option, a port outside
+  1-65535 and a key outside `/var/lib/zabbix/ssh/`; the target follows `--`. The comment about
+  passwords now says what is true: ssh's argv carries none, the script's own does (a Zabbix macro).
+
 ### Probe VM
 - Docker is installed from Docker's apt repository with the signing key's fingerprint pinned, instead
   of the `get.docker.com` script.

@@ -19,7 +19,7 @@
 # without it simply omit the temp field. Keeping the whole poll in one master item means dependent
 # items parse it with JSONPath - one XAPI session per poll, nothing else.
 #
-# Usage (as Zabbix runs it): argus_xcpng.py <host> <user> <pass> [vmmode] [ignore]
+# Usage (as Zabbix runs it): argus_xcpng.py <host> <user> <pass> [vmmode] [ignore] [tls]
 #   host   - pool master address (the template passes {HOST.CONN}); a slave answers HOST_IS_SLAVE
 #            and the script follows the redirect to the master automatically
 #   user   - XAPI username (root; XCP-NG local XAPI accounts are root-only)
@@ -29,19 +29,30 @@
 #   ignore - comma-separated VM names to leave out entirely (parked templates, scratch VMs):
 #            they disappear from the per-VM lists AND the running/defined counts. Zabbix parses
 #            key parameters before expanding macros, so the commas inside the one macro are safe.
+#   tls    - pin (default) | verify | ignore. XCP-NG hosts run self-signed XAPI certificates, so
+#            "pin" trusts the certificate on FIRST contact and remembers its SHA-256 on this
+#            collector (ARGUS_PIN_DIR, default /var/lib/zabbix/argus-pins, one file per address);
+#            a different certificate later is refused and reported as tls_error (reachable=0).
+#            Delete the pin file (or set ignore) after a deliberate certificate change. "verify"
+#            checks against the system CA store; "ignore" checks nothing.
 #
 # A connection failure is NOT an error: it prints reachable=0 so the template's down trigger fires
 # instead of the item going unsupported. Rejected credentials print reachable=1, authed=0 (their
 # own trigger). Only bad arguments exit non-zero.
 import sys
+import os
 import json
 import re
 import ssl
 import time
 import calendar
+import hashlib
+import http.client
 import urllib.request
 import xml.etree.ElementTree as ET
 import xmlrpc.client
+
+PIN_DIR = os.environ.get("ARGUS_PIN_DIR", "/var/lib/zabbix/argus-pins")
 
 CALL_TIMEOUT = 8   # per XML-RPC call
 RRD_TIMEOUT = 5    # per rrd_updates fetch (one per live host)
@@ -55,21 +66,104 @@ OUT = {
     "hosts": [],
     "vms": [],
     "vms_perf": [],
+    "tls_error": "",
 }
+
+
+class TLSPolicy:
+    """How this poll checks the XAPI certificate. "pin" learns the SHA-256 on first contact and
+    refuses a change; the pin lives in PIN_DIR, keyed by address (the pool master's, after a
+    HOST_IS_SLAVE redirect)."""
+
+    def __init__(self, mode):
+        self.mode = (mode or "pin").strip().lower()
+        if self.mode not in ("pin", "verify", "ignore"):
+            self.mode = "pin"
+
+    def context(self):
+        if self.mode == "verify":
+            return ssl.create_default_context()
+        return ssl._create_unverified_context()
+
+    def pin_path(self, addr):
+        safe = "".join(ch if ch.isalnum() or ch in ".-_" else "_" for ch in addr)
+        return os.path.join(PIN_DIR, safe)
+
+    def check(self, addr, sock):
+        """Compare (or learn) the certificate on a freshly connected TLS socket; raise on mismatch."""
+        if self.mode != "pin":
+            return
+        got = hashlib.sha256(sock.getpeercert(binary_form=True)).hexdigest()
+        path = self.pin_path(addr)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                want = fh.read().strip()
+        except FileNotFoundError:
+            want = ""
+        except Exception:
+            return  # no pin store available: nothing to compare with
+        if not want:
+            try:
+                os.makedirs(PIN_DIR, mode=0o700, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(got + "\n")
+            except Exception:
+                pass  # can't remember it here; next poll trusts again
+            return
+        if want != got:
+            raise ssl.SSLCertVerificationError(
+                "the XAPI certificate of %s changed (pinned %s, presented %s); delete %s after a deliberate change"
+                % (addr, want[:16], got[:16], path))
+
+
+TLS = TLSPolicy("pin")
 
 
 def emit():
     print(json.dumps(OUT, separators=(",", ":")))
 
 
+class _CheckedHTTPSConnection(http.client.HTTPSConnection):
+    """An HTTPS connection that applies the TLS policy right after the handshake."""
+    addr = ""
+
+    def connect(self):
+        super().connect()
+        try:
+            TLS.check(self.addr, self.sock)
+        except Exception:
+            self.close()
+            raise
+
+
 class TimeoutTransport(xmlrpc.client.SafeTransport):
-    def __init__(self, context):
+    def __init__(self, context, addr):
         super().__init__(context=context)
+        self._addr = addr
 
     def make_connection(self, host):
-        conn = super().make_connection(host)
-        conn.timeout = CALL_TIMEOUT
+        if self._connection and host == self._connection[0]:
+            return self._connection[1]
+        chost, self._extra_headers, _ = self.get_host_info(host)
+        conn = _CheckedHTTPSConnection(chost, timeout=CALL_TIMEOUT, context=self.context)
+        conn.addr = self._addr
+        self._connection = host, conn
         return conn
+
+
+class _CheckedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, addr):
+        super().__init__(context=TLS.context())
+        self._addr = addr
+
+    def https_open(self, req):
+        addr = self._addr
+
+        def factory(host, **kw):
+            c = _CheckedHTTPSConnection(host, **kw)
+            c.addr = addr
+            return c
+        return self.do_open(factory, req, context=self._context)
 
 
 class XapiError(Exception):
@@ -88,9 +182,8 @@ def call(fn, *args):
 
 def connect(addr, user, passwd):
     """Login against addr, following one HOST_IS_SLAVE redirect to the master."""
-    ctx = ssl._create_unverified_context()  # XCP-NG hosts run self-signed XAPI certs
     for _ in range(2):
-        proxy = xmlrpc.client.ServerProxy("https://" + addr, transport=TimeoutTransport(ctx), allow_none=True)
+        proxy = xmlrpc.client.ServerProxy("https://" + addr, transport=TimeoutTransport(TLS.context(), addr), allow_none=True)
         r = proxy.session.login_with_password(user, passwd, "1.0", "argus")
         if r.get("Status") == "Success":
             return proxy, r["Value"], addr
@@ -118,10 +211,10 @@ def fetch_rrds(addr, session_id):
     plus timestamped rows. Rows are not guaranteed oldest-first and idle columns read NaN, so keep,
     per column, the value from the newest row that has a real number.
     """
-    ctx = ssl._create_unverified_context()
     url = "https://%s/rrd_updates?session_id=%s&start=%d&cf=AVERAGE&interval=60&host=true" % (
         addr, session_id, int(time.time()) - 300)
-    with urllib.request.urlopen(url, timeout=RRD_TIMEOUT, context=ctx) as resp:
+    opener = urllib.request.build_opener(_CheckedHTTPSHandler(addr))
+    with opener.open(url, timeout=RRD_TIMEOUT) as resp:
         root = ET.fromstring(resp.read())
     legend = [e.text or "" for e in root.findall("./meta/legend/entry")]
     best = {}   # column index -> (t, value)
@@ -165,12 +258,18 @@ def main():
     ignore = set()
     if len(sys.argv) > 5:
         ignore = {n.strip() for n in sys.argv[5].split(",") if n.strip()}
+    global TLS
+    TLS = TLSPolicy(sys.argv[6] if len(sys.argv) > 6 else "pin")
 
     try:
         proxy, sid, addr = connect(addr, user, passwd)
     except XapiError as e:
         if e.desc[0] == "SESSION_AUTHENTICATION_FAILED":
             OUT["reachable"] = 1   # XAPI answered - the credentials are the problem
+        emit()
+        return
+    except ssl.SSLCertVerificationError as e:
+        OUT["tls_error"] = str(e)[:300]   # reachable=0: the down trigger fires, the reason is here
         emit()
         return
     except Exception:

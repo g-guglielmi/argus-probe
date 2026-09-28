@@ -24,7 +24,8 @@ USER root
 # subnet scanner) and argus_unifi_sweep.py (the UniFi controller sweep). All stdlib-only
 # (they build/parse the wire protocols themselves), so no extra Python packages and no nmap.
 # openssh-client + sshpass: the agentless-Linux collector logs into the target over SSH (key auth via
-# openssh-client; password auth via sshpass, which feeds $SSHPASS so no password touches argv/ps).
+# openssh-client; password auth via sshpass, which feeds $SSHPASS so ssh's own argv carries no password;
+# the collector script itself receives it as a Zabbix macro argument, readable by root here).
 RUN apk add --no-cache openssl curl jq python3 openssh-client sshpass
 
 # Bake the image version (Zabbix version + our wrapper revision, e.g. "7.0.29-r1") so the running

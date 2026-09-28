@@ -17,8 +17,9 @@
 # Run by the probe entrypoint when a check-in hands out a scan job (NOT a Zabbix external check;
 # it only lives in externalscripts so the image build ships it automatically):
 #   argus_netscan.py --job <job.json>            job: {"id":12,"cidr":"10.0.0.0/24","snmp":{...},
-#     "controllers":[{"id":1,"url":"https://...","key":"..."}]} - after the scan the saved UniFi
-#     controllers are queried LOCALLY (best-effort, X-API-KEY, TLS unverified like the templates):
+#     "controllers":[{"id":1,"url":"https://...","key":"...","tls":"pin","fingerprint":"..."}]} -
+#     after the scan the saved UniFi controllers are queried LOCALLY (best-effort, X-API-KEY, the
+#     certificate checked as the controller's saved policy says: verify / pin / ignore):
 #     a host matching an adopted device gains "unifi" facts + "unifi_ctl", one matching the client
 #     table gains a "unifi_client" naming hint. Local matters: a controller is often reachable
 #     only from its site's probe, not from the Argus core.
@@ -331,38 +332,83 @@ def scan(cidr, snmp_cfg):
 # --- UniFi controller enrichment (best-effort, after the scan) -------------------------------
 # The job may carry the saved controllers; querying them from HERE (the probe's own network)
 # is the point - the Argus core often can't reach a remote site's controller. Same API the
-# UniFi class templates poll: X-API-KEY, /proxy/network prefix with a bare-path fallback,
-# TLS unverified. Any failure just leaves the affected rows unenriched.
+# UniFi class templates poll: X-API-KEY, /proxy/network prefix with a bare-path fallback, the
+# certificate checked as the controller's saved policy says. Any failure just leaves the affected
+# rows unenriched.
 
 CTL_TIMEOUT = 8        # per request
 ENRICH_BUDGET = 45     # overall, all controllers together
 
+# --- TLS policy -------------------------------------------------------------------------------
+# How a target's certificate is checked: "verify" (system CA store), "pin" (the leaf certificate's
+# SHA-256 must equal a known fingerprint), "ignore" (no check). A pinned connection compares the
+# certificate right after the handshake, on the very socket the request uses.
+import hashlib
+import http.client
 
-def _ctl_get(base, prefix, path, key):
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    pin = ""
+
+    def connect(self):
+        super().connect()
+        got = hashlib.sha256(self.sock.getpeercert(binary_form=True)).hexdigest()
+        if got != self.pin:
+            self.close()
+            raise ssl.SSLCertVerificationError("certificate fingerprint mismatch (presented %s)" % got)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pin):
+        super().__init__(context=ssl._create_unverified_context())
+        self._pin = pin
+
+    def https_open(self, req):
+        pin = self._pin
+
+        def factory(host, **kw):
+            c = _PinnedHTTPSConnection(host, **kw)
+            c.pin = pin
+            return c
+        return self.do_open(factory, req, context=self._context)
+
+
+def tls_opener(mode, fingerprint=""):
+    """An opener for urllib.request that applies the policy; mode "" means verify."""
+    mode = (mode or "verify").strip().lower()
+    fp = "".join(ch for ch in (fingerprint or "").lower() if ch in "0123456789abcdef")
+    if mode == "ignore":
+        return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+    if mode == "pin" and len(fp) == 64:
+        return urllib.request.build_opener(_PinnedHTTPSHandler(fp))
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+
+
+def _ctl_get(opener, base, prefix, path, key):
     req = urllib.request.Request(base + prefix + path,
                                  headers={"X-API-KEY": key, "Accept": "application/json"})
-    ctx = ssl._create_unverified_context()
-    with urllib.request.urlopen(req, timeout=CTL_TIMEOUT, context=ctx) as resp:
+    with opener.open(req, timeout=CTL_TIMEOUT) as resp:
         return json.loads(resp.read())
 
 
-def controller_inventory(base, key):
+def controller_inventory(base, key, tls="", fingerprint=""):
     base = (base or "").strip().rstrip("/")
     if not base or not key:
         raise ValueError("no controller")
+    opener = tls_opener(tls, fingerprint)
     prefix = "/proxy/network"
     try:
-        sites = _ctl_get(base, prefix, "/api/self/sites", key)
+        sites = _ctl_get(opener, base, prefix, "/api/self/sites", key)
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
         prefix = ""  # plain self-hosted controller: no UniFi OS proxy prefix
-        sites = _ctl_get(base, prefix, "/api/self/sites", key)
+        sites = _ctl_get(opener, base, prefix, "/api/self/sites", key)
     devices, clients = [], []
     for site in sites.get("data") or []:
         name = site.get("name") or "default"
         desc = site.get("desc") or ""
-        for d in (_ctl_get(base, prefix, "/api/s/%s/stat/device" % name, key).get("data") or []):
+        for d in (_ctl_get(opener, base, prefix, "/api/s/%s/stat/device" % name, key).get("data") or []):
             ip = (d.get("lan_ip") or d.get("ip") or "").strip()  # a gateway's "ip" is its WAN
             if not d.get("adopted") or not ip:
                 continue
@@ -373,7 +419,7 @@ def controller_inventory(base, key):
                                       "state": int(d.get("state") or 0),
                                       "version": d.get("version") or "",
                                       "site": name, "site_desc": desc}})
-        for c in (_ctl_get(base, prefix, "/api/s/%s/stat/sta" % name, key).get("data") or []):
+        for c in (_ctl_get(opener, base, prefix, "/api/s/%s/stat/sta" % name, key).get("data") or []):
             clients.append({"ip": (c.get("ip") or "").strip(),
                             "mac": (c.get("mac") or "").strip().lower(),
                             "name": (c.get("name") or "").strip(),
@@ -395,7 +441,7 @@ def enrich_hosts(hosts, controllers):
         if time.monotonic() > stop:
             break
         try:
-            devices, clients = controller_inventory(ctl.get("url"), ctl.get("key"))
+            devices, clients = controller_inventory(ctl.get("url"), ctl.get("key"), ctl.get("tls") or "", ctl.get("fingerprint") or "")
         except Exception:
             continue  # unreachable from this probe / bad key: contributes nothing
         cid = int(ctl.get("id") or 0)
