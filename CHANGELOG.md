@@ -18,6 +18,14 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+**Probe image:**
+- The XCP-NG and Linux SSH collectors (and the sweep script's manual mode) wipe their own command
+  line as soon as they have read their arguments, so a password Zabbix hands them as an argument
+  shows in `ps`, `top`, `docker top` or a support bundle only during interpreter start-up, not for
+  the whole check. Zabbix can pass a value to an external check no other way; the proxy's own
+  configuration database holds the same macros, so this closes the accidental capture, not access
+  by whoever already runs inside the container.
+
 ### Probe VM
 - Docker is installed from Docker's apt repository with the signing key's fingerprint pinned, instead
   of the `get.docker.com` script.

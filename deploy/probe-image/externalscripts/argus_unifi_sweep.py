@@ -186,13 +186,36 @@ def post_results(url, token, body):
     return False
 
 
+def scrub_cmdline(title):
+    """Zero this process's command line (what ps, top, docker top and /proc/<pid>/cmdline show)
+    once the arguments have been read, leaving only the script name. Zabbix can hand a secret to an
+    external check only as an argument, so this keeps a password on the command line for the few
+    milliseconds of interpreter start-up instead of the whole run. Best effort: Linux only, and it
+    never fails the check."""
+    try:
+        import ctypes
+        with open("/proc/self/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        # proc(5): fields after the command name start at 3; arg_start is 48, arg_end 49.
+        arg_start, arg_end = int(fields[45]), int(fields[46])
+        size = arg_end - arg_start
+        if 0 < size < (1 << 20):
+            ctypes.memset(arg_start, 0, size)
+            name = title.encode()[: size - 1]
+            ctypes.memmove(arg_start, name, len(name))
+    except Exception:
+        pass
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     if mode == "--print":
         if len(sys.argv) < 4:
             sys.stderr.write("usage: argus_unifi_sweep.py --print <url> <api-key>\n")
             sys.exit(1)
-        print(json.dumps(sweep(sys.argv[2], sys.argv[3]), indent=2))
+        url, key = sys.argv[2], sys.argv[3]
+        scrub_cmdline("argus_unifi_sweep.py")
+        print(json.dumps(sweep(url, key), indent=2))
         return
     if mode == "--job":
         token = os.environ.get("ARGUS_PROBE_TOKEN", "")

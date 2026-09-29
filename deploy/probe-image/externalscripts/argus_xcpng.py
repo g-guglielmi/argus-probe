@@ -249,6 +249,27 @@ def rrd_sum(rrds, prefix, pattern):
     return total if found else None
 
 
+def scrub_cmdline(title):
+    """Zero this process's command line (what ps, top, docker top and /proc/<pid>/cmdline show)
+    once the arguments have been read, leaving only the script name. Zabbix can hand a secret to an
+    external check only as an argument, so this keeps a password on the command line for the few
+    milliseconds of interpreter start-up instead of the whole run. Best effort: Linux only, and it
+    never fails the check."""
+    try:
+        import ctypes
+        with open("/proc/self/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        # proc(5): fields after the command name start at 3; arg_start is 48, arg_end 49.
+        arg_start, arg_end = int(fields[45]), int(fields[46])
+        size = arg_end - arg_start
+        if 0 < size < (1 << 20):
+            ctypes.memset(arg_start, 0, size)
+            name = title.encode()[: size - 1]
+            ctypes.memmove(arg_start, name, len(name))
+    except Exception:
+        pass
+
+
 def main():
     if len(sys.argv) < 4 or not sys.argv[1]:
         sys.stderr.write("usage: argus_xcpng.py <host> <user> <pass> [vmmode]\n")
@@ -260,6 +281,7 @@ def main():
         ignore = {n.strip() for n in sys.argv[5].split(",") if n.strip()}
     global TLS
     TLS = TLSPolicy(sys.argv[6] if len(sys.argv) > 6 else "pin")
+    scrub_cmdline("argus_xcpng.py")
 
     try:
         proxy, sid, addr = connect(addr, user, passwd)

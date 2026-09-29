@@ -25,9 +25,9 @@
 #   user      - SSH login user (a read-only account is enough; default "root")
 #   port      - SSH port (default 22)
 #   auth      - "key" or "password" (default "key")
-#   password  - the SSH password, for auth=password. Zabbix passes it to THIS script as an argument
-#               (visible to root on the collector); ssh itself never sees it on argv: sshpass reads
-#               it from the environment.
+#   password  - the SSH password, for auth=password. Zabbix can only pass it to THIS script as an
+#               argument; the script wipes its own command line as soon as it has read it, and ssh
+#               never sees it on argv: sshpass reads it from the environment.
 #   keyfile   - path ON THIS COLLECTOR to the private key, for auth=key
 #
 # A connection/auth/parse failure is NOT an error: it prints reachable=0 so the template's down
@@ -201,6 +201,27 @@ def sections(text):
     return out
 
 
+def scrub_cmdline(title):
+    """Zero this process's command line (what ps, top, docker top and /proc/<pid>/cmdline show)
+    once the arguments have been read, leaving only the script name. Zabbix can hand a secret to an
+    external check only as an argument, so this keeps a password on the command line for the few
+    milliseconds of interpreter start-up instead of the whole run. Best effort: Linux only, and it
+    never fails the check."""
+    try:
+        import ctypes
+        with open("/proc/self/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        # proc(5): fields after the command name start at 3; arg_start is 48, arg_end 49.
+        arg_start, arg_end = int(fields[45]), int(fields[46])
+        size = arg_end - arg_start
+        if 0 < size < (1 << 20):
+            ctypes.memset(arg_start, 0, size)
+            name = title.encode()[: size - 1]
+            ctypes.memmove(arg_start, name, len(name))
+    except Exception:
+        pass
+
+
 def main():
     if len(sys.argv) < 2 or not sys.argv[1]:
         sys.stderr.write("usage: argus_linux_ssh.py <host> <user> <port> <auth> <password> <keyfile>\n")
@@ -211,6 +232,7 @@ def main():
     auth = (sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else "key").lower()
     passwd = sys.argv[5] if len(sys.argv) > 5 else ""
     keyfile = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else "/var/lib/zabbix/ssh/argus_id"
+    scrub_cmdline("argus_linux_ssh.py")
     # The values are macros an Argus admin typed; they become ssh arguments here, so they must be a
     # login name, a port and a key inside the collector's ssh dir - never something ssh would parse
     # as an option or a path it would open elsewhere. (Argus validates them too; this is the last line.)
