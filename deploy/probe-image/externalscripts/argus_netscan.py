@@ -412,8 +412,12 @@ def controller_inventory(base, key, tls="", fingerprint=""):
             ip = (d.get("lan_ip") or d.get("ip") or "").strip()  # a gateway's "ip" is its WAN
             if not d.get("adopted") or not ip:
                 continue
-            devices.append({"ip": ip, "mac": (d.get("mac") or "").strip().lower(),
-                            "facts": {"name": (d.get("name") or "").strip(),
+            mac = (d.get("mac") or "").strip().lower()
+            # The facts carry the device MAC too: a gateway answers ARP on its LAN side with a
+            # derived address, so a row matched by IP would otherwise only hold that one, and
+            # the controller looks devices up by their own MAC ({$UNIFI.MAC}).
+            devices.append({"ip": ip, "mac": mac,
+                            "facts": {"name": (d.get("name") or "").strip(), "mac": mac,
                                       "model": d.get("model") or "",
                                       "type": (d.get("type") or "").lower(),
                                       "state": int(d.get("state") or 0),

@@ -22,6 +22,13 @@ listed together newest first, each section headed by its exact release tag:
 - Docker is installed from Docker's apt repository with the signing key's fingerprint pinned, instead
   of the `get.docker.com` script.
 
+## [probe/v7.0.31-r12] - 2026-09-29
+
+### Fixed
+- A network scan that matches a device to a saved UniFi controller now passes on the controller's
+  own MAC for it. A gateway answers on its LAN with a derived address, so a gateway matched by IP
+  used to be added with a MAC the controller doesn't know, and none of its sensors could read.
+
 ## [probe/v7.0.31-r11] - 2026-09-29
 
 ### Added
