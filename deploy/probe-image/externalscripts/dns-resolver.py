@@ -86,10 +86,14 @@ def check(name, server, port):
         if rcode == 0 and an > 0:
             out["success"] = 1
             out["ip"] = first_a(data, an)
+        elif rcode == 0:
+            out["error"] = "the server answered with no records"
         else:
-            out["error"] = out["rcode"]
+            out["error"] = "the server answered " + out["rcode"]
+    except socket.timeout:
+        out["error"] = "no answer within 3 s"
     except Exception as e:
-        out["error"] = str(e)
+        out["error"] = " ".join(str(e).split())[:200] or e.__class__.__name__
     return out
 
 

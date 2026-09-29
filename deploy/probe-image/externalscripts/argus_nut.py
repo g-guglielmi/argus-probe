@@ -21,20 +21,48 @@
 #   user/pass - only if this upsd requires a login to read (most allow anonymous LIST VAR)
 #
 # A connection/protocol failure is NOT an error: it prints reachable=0 so the template's down trigger
-# fires (max(nut.reachable,#3)=0) instead of the item going unsupported. Only bad arguments do.
+# fires (max(nut.reachable,#3)=0) instead of the item going unsupported, and says why in "error".
+# Only bad arguments do.
 import sys
 import json
+import re
 import socket
 
 OUT = {
     "reachable": 0, "status": "", "charge": None, "runtime": None,
     "load": None, "input_voltage": None, "output_voltage": None, "realpower": 0,
-    "on_battery": 0, "low_battery": 0,
+    "on_battery": 0, "low_battery": 0, "error": "",
+}
+
+# What upsd's refusals mean, for the error field (NUT network protocol, "ERR <code>").
+NUT_ERRORS = {
+    "UNKNOWN-UPS": 'upsd has no UPS named "%(ups)s" - check the UPS name',
+    "ACCESS-DENIED": "upsd refused this collector - check the user name and password (upsd.users)",
+    "DATA-STALE": "upsd has no fresh data from the UPS driver",
+    "DRIVER-NOT-CONNECTED": "upsd is not connected to the UPS driver",
 }
 
 
 def emit():
     print(json.dumps(OUT))
+
+
+def reason(e):
+    """An exception as one short line for the error field: "Connection refused", not
+    "[Errno 111] Connection refused"."""
+    s = re.sub(r"^\[Errno -?\d+\]\s*", "", str(e).strip()) or e.__class__.__name__
+    return " ".join(s.split())[:200]
+
+
+def refused(answer, ups):
+    """upsd's answer to LIST VAR when it isn't a variable list, as a sentence."""
+    answer = " ".join(answer.split())[:120]
+    if not answer:
+        return "upsd closed the connection without an answer"
+    code = answer[4:].split(" ")[0] if answer.startswith("ERR ") else ""
+    if code in NUT_ERRORS:
+        return 'upsd answered "%s": %s' % (answer, NUT_ERRORS[code] % {"ups": ups[:60]})
+    return 'upsd answered "%s"' % answer
 
 
 def to_num(vars_, key):
@@ -76,6 +104,7 @@ def main():
         if not first.startswith("BEGIN LIST VAR"):
             # Reached upsd but it refused (e.g. unknown UPS, access denied): reachable, no vars.
             OUT["reachable"] = 1
+            OUT["error"] = refused(first, ups)
             try:
                 send("LOGOUT")
             except Exception:
@@ -111,7 +140,8 @@ def main():
         except Exception:
             pass
         sock.close()
-    except Exception:
+    except Exception as e:
+        OUT["error"] = "no answer from upsd at %s:%d: %s" % (host, port, reason(e))
         emit()   # unreachable -> reachable stays 0
         return
 

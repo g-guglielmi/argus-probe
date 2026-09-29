@@ -38,7 +38,7 @@
 #
 # A connection failure is NOT an error: it prints reachable=0 so the template's down trigger fires
 # instead of the item going unsupported. Rejected credentials print reachable=1, authed=0 (their
-# own trigger). Only bad arguments exit non-zero.
+# own trigger). Either way "error" says why. Only bad arguments exit non-zero.
 import sys
 import os
 import json
@@ -67,6 +67,7 @@ OUT = {
     "vms": [],
     "vms_perf": [],
     "tls_error": "",
+    "error": "",
 }
 
 
@@ -170,6 +171,13 @@ class XapiError(Exception):
     def __init__(self, desc):
         super().__init__(":".join(desc) if desc else "unknown")
         self.desc = desc or ["UNKNOWN"]
+
+
+def reason(e):
+    """An exception as one short line for the error field: "Connection refused", not
+    "[Errno 111] Connection refused"."""
+    s = re.sub(r"^\[Errno -?\d+\]\s*", "", str(e).strip()) or e.__class__.__name__
+    return " ".join(s.split())[:200]
 
 
 def call(fn, *args):
@@ -288,13 +296,18 @@ def main():
     except XapiError as e:
         if e.desc[0] == "SESSION_AUTHENTICATION_FAILED":
             OUT["reachable"] = 1   # XAPI answered - the credentials are the problem
+            OUT["error"] = "XAPI rejected the user name or password"
+        else:
+            OUT["error"] = "XAPI refused the login: " + reason(e)
         emit()
         return
     except ssl.SSLCertVerificationError as e:
         OUT["tls_error"] = str(e)[:300]   # reachable=0: the down trigger fires, the reason is here
+        OUT["error"] = OUT["tls_error"]
         emit()
         return
-    except Exception:
+    except Exception as e:
+        OUT["error"] = "no answer from XAPI: " + reason(e)
         emit()
         return
 
@@ -304,12 +317,13 @@ def main():
         hmetrics = call(proxy.host_metrics.get_all_records, sid)
         vms = call(proxy.VM.get_all_records, sid)
         vmetrics = call(proxy.VM_metrics.get_all_records, sid)
-    except Exception:
+    except Exception as e:
         try:
             proxy.session.logout(sid)
         except Exception:
             pass
         OUT["reachable"] = 1
+        OUT["error"] = "XAPI accepted the login but a data call failed: " + reason(e)
         emit()
         return
 

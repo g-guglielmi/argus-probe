@@ -22,6 +22,17 @@ listed together newest first, each section headed by its exact release tag:
 - Docker is installed from Docker's apt repository with the signing key's fingerprint pinned, instead
   of the `get.docker.com` script.
 
+## [probe/v7.0.31-r11] - 2026-09-29
+
+### Added
+- The collectors say why a poll failed. The SSH, XCP-NG and NUT collectors print an `error` field
+  next to `reachable` (the line ssh printed, such as `Permission denied (publickey)` or `Host key
+  verification failed`; the XAPI failure; upsd's `ERR` answer and what it means, such as no UPS by
+  that name), and the DNS check words its failures (`the server answered NXDOMAIN`, no answer within
+  3 s). Argus shows the reason next to the down reading and puts it in the alert; the core's templates
+  keep it in a Collection error item. Reasons carry no secret: only what the other side said and
+  which setting to check.
+
 ## [probe/v7.0.31-r10] - 2026-09-29
 
 ### Added

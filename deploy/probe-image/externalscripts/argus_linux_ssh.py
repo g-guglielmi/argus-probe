@@ -31,8 +31,9 @@
 #   keyfile   - path ON THIS COLLECTOR to the private key, for auth=key
 #
 # A connection/auth/parse failure is NOT an error: it prints reachable=0 so the template's down
-# trigger fires (max(linux.ssh.reachable,#3)=0) instead of the items going unsupported. Only bad
-# arguments exit non-zero.
+# trigger fires (max(linux.ssh.reachable,#3)=0) instead of the items going unsupported, and says why
+# in "error" (the line ssh printed, e.g. "Permission denied (publickey)"). Only bad arguments exit
+# non-zero.
 import sys
 import re
 import os
@@ -61,7 +62,7 @@ SKIP_FS_SRC = ("tmpfs", "devtmpfs", "overlay", "shm", "none", "udev", "cgroup", 
 SKIP_MOUNT_PREFIX = ("/proc", "/sys", "/dev", "/run", "/var/lib/docker/")
 
 OUT = {
-    "reachable": 0, "authed": 0,
+    "reachable": 0, "authed": 0, "error": "",
     "cpu_util": None, "cpu_cores": None,
     "load1": None, "load5": None, "load15": None,
     "mem_total": None, "mem_available": None, "mem_free": None,
@@ -102,6 +103,29 @@ def ssh_command(host, user, port, auth, keyfile):
             "-o", "PasswordAuthentication=no",
             "-o", "PreferredAuthentications=publickey"] + \
         common + ["--", target, REMOTE]
+
+
+def reason(e):
+    """An exception as one short line for the error field: "Connection refused", not
+    "[Errno 111] Connection refused"."""
+    s = re.sub(r"^\[Errno -?\d+\]\s*", "", str(e).strip()) or e.__class__.__name__
+    return " ".join(s.split())[:200]
+
+
+def ssh_reason(stderr, rc, auth):
+    """The line ssh (or sshpass) printed about why the session failed, "" when there is none."""
+    if auth == "password" and rc == 5:
+        return "the SSH password was rejected"
+    if auth == "password" and rc == 6:
+        return "sshpass stopped at an unknown host key"
+    lines = [" ".join(l.split()) for l in stderr.decode("utf-8", "replace").splitlines()]
+    lines = [l for l in lines if l and not l.startswith(("Warning:", "**", "@@@"))]
+    if not lines:
+        return ""
+    msg = lines[-1][:200]
+    if msg.startswith("Host key verification failed"):
+        msg += " (the host's SSH key changed: remove its entry from argus_known_hosts on the collector)"
+    return msg
 
 
 def known_hosts_path():
@@ -253,14 +277,25 @@ def main():
     try:
         proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               timeout=25)
-    except Exception:
-        emit()          # ssh/sshpass missing or timed out -> unreachable
+    except subprocess.TimeoutExpired:
+        OUT["error"] = "the SSH session did not finish within 25 s"
+        emit()
+        return
+    except FileNotFoundError:
+        OUT["error"] = "ssh or sshpass is not installed on this collector"
+        emit()
+        return
+    except Exception as e:
+        OUT["error"] = reason(e)
+        emit()
         return
     text = proc.stdout.decode("utf-8", "replace")
     sec = sections(text)
     if "END" not in sec:
         # No clean end marker: the session did not complete (auth failure, refused, dropped).
         OUT["reachable"] = 1 if proc.returncode in (0, 1) and text.strip() else 0
+        OUT["error"] = ssh_reason(proc.stderr, proc.returncode, auth) or \
+            "the SSH session ended before the readings were complete"
         emit()
         return
 
