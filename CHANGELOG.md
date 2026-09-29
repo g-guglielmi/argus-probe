@@ -22,6 +22,15 @@ listed together newest first, each section headed by its exact release tag:
 - Docker is installed from Docker's apt repository with the signing key's fingerprint pinned, instead
   of the `get.docker.com` script.
 
+## [probe/v7.0.31-r10] - 2026-09-29
+
+### Added
+- A Docker `HEALTHCHECK` (`/app/healthcheck.py`, standard library only): healthy while the Zabbix
+  proxy process runs and accepts connections on its listen port (`ZBX_LISTENIP` / `ZBX_LISTENPORT`,
+  default the loopback and 10051). Every 30 s, a 120 s start period for a first boot's enrollment,
+  unhealthy after 3 failures. Whether the proxy reaches the core stays out of it: Argus alerts on
+  that, and a restart can't fix the network.
+
 ## [probe/v7.0.31-r9] - 2026-09-29
 
 ### Added

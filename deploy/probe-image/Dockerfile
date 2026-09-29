@@ -48,6 +48,12 @@ RUN chmod 0755 /usr/lib/zabbix/externalscripts/*.py
 # Run as root (like the stock image expects): the entrypoint prepares the fresh, root-owned
 # /var/lib/zabbix volume and chowns the enrolled certs, then hands off to the stock entrypoint,
 # which fixes the spool ownership and drops to the unprivileged zabbix user to run the proxy.
+# Container health for Docker, the Unraid GUI or Dockhand: the Zabbix proxy runs and accepts
+# connections on its listen port (healthcheck.py). The start period covers a first boot's enrollment
+# and the start-time check-in with Argus.
+COPY healthcheck.py /app/healthcheck.py
+RUN chmod 0755 /app/healthcheck.py
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 CMD ["python3", "/app/healthcheck.py"]
 ENTRYPOINT ["/usr/local/bin/argus-entrypoint.sh"]
 # Overriding ENTRYPOINT clears the base image's CMD, so restore it - this is the command our
 # entrypoint hands to the stock docker-entrypoint.sh, and it carries the required --foreground

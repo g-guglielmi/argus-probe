@@ -56,6 +56,13 @@ Both POST their raw facts back to `POST /api/probes/scan-results`, run one at a 
 (lock files), and keep the probe a pure reporter with no listening port; an older Argus that never
 sends `scan`/`sweep` leaves the branches inert.
 
+## Container health
+
+The image declares a Docker `HEALTHCHECK` (`/app/healthcheck.py`): healthy while the Zabbix proxy
+process runs and accepts connections on its listen port (the loopback and 10051 unless
+`ZBX_LISTENIP` / `ZBX_LISTENPORT` say otherwise). `docker ps`, the Unraid GUI and Dockhand show the
+result. Reaching the core is not part of it: Argus alerts on that ("Probe unreachable").
+
 ## Zabbix process counts
 
 Zabbix reads its process counts (`StartPingers`, `StartPollers`, `StartTrappers`, ...) only when the
