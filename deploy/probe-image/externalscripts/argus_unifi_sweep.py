@@ -29,6 +29,7 @@ import ssl
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 TIMEOUT = 30
@@ -76,6 +77,38 @@ def tls_opener(mode, fingerprint=""):
     if mode == "pin" and len(fp) == 64:
         return urllib.request.build_opener(_PinnedHTTPSHandler(fp))
     return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+
+
+def read_certificate(base):
+    """The certificate the controller presents, without trusting it: {fingerprint, subject, issuer,
+    not_after}. The fingerprint is computed here; the names come from openssl when available (the
+    stdlib exposes no parsed certificate for an unverified connection)."""
+    u = urllib.parse.urlparse((base or "").strip())
+    host, port = u.hostname, u.port or 443
+    if not host:
+        raise ValueError("no host in the controller URL")
+    ctx = ssl._create_unverified_context()
+    with socket.create_connection((host, port), timeout=TIMEOUT) as raw:
+        with ctx.wrap_socket(raw, server_hostname=host) as s:
+            der = s.getpeercert(binary_form=True)
+    info = {"fingerprint": hashlib.sha256(der).hexdigest(), "subject": "", "issuer": "", "not_after": ""}
+    try:
+        import subprocess
+        pem = ssl.DER_cert_to_PEM_cert(der)
+        out = subprocess.run(["openssl", "x509", "-noout", "-subject", "-issuer", "-enddate", "-nameopt", "RFC2253"],
+                             input=pem, capture_output=True, text=True, timeout=10).stdout
+        for line in out.splitlines():
+            k, _, v = line.partition("=")
+            k = k.strip().lower()
+            if k == "subject":
+                info["subject"] = v.strip()
+            elif k == "issuer":
+                info["issuer"] = v.strip()
+            elif k == "notafter":
+                info["not_after"] = v.strip()
+    except Exception:
+        pass  # fingerprint alone is enough to pin
+    return info
 
 
 def get_json(opener, base, prefix, path, key):
@@ -171,11 +204,27 @@ def main():
             job = json.load(f)
         url = checkin.rsplit("/", 1)[0] + "/scan-results"  # .../api/probes/checkin -> .../scan-results
         body = {"job_id": int(job.get("id") or 0), "error": "", "hosts": []}
+        if job.get("cert_only"):
+            # Argus can't reach this controller itself: report which certificate it presents, so the
+            # admin can pin it. No key travels, nothing is imported.
+            try:
+                body["certificate"] = read_certificate(job.get("url") or "")
+            except Exception as e:
+                body["error"] = ("could not read the controller's certificate: %s" % e)[:200]
+            if not post_results(url, token, body):
+                sys.exit(1)
+            return
         try:
             out = sweep(job.get("url") or "", job.get("key") or "", job.get("tls") or "", job.get("fingerprint") or "")
             body["hosts"] = out["hosts"]
         except Exception as e:  # an unreachable controller etc. must still complete the job on core
             body["error"] = str(e)[:200]
+            if "certificate" in str(e):
+                # The check refused the controller: say which certificate it showed, so it can be pinned.
+                try:
+                    body["certificate"] = read_certificate(job.get("url") or "")
+                except Exception:
+                    pass
         if not post_results(url, token, body):
             sys.exit(1)
         return

@@ -18,6 +18,22 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+### Probe VM
+- Docker is installed from Docker's apt repository with the signing key's fingerprint pinned, instead
+  of the `get.docker.com` script.
+
+### CI
+- Actions pinned to commits, permissions granted per job, provenance and SBOM attestations on the
+  probe image; `:latest` and a Release are only ever produced from `main`.
+
+## [probe/v7.0.31-r6] - 2026-09-29
+
+### Added
+- The sweep script answers a **certificate check** job (`cert_only`) from Argus: it connects to the
+  controller URL, reports the certificate it presents (SHA-256, subject, issuer, expiry) and
+  nothing else, so a controller only the probe can reach can be pinned from the Argus dialog. A
+  sweep refused by the certificate check reports the certificate it saw the same way.
+
 ## [probe/v7.0.31-r5] - 2026-09-29
 
 ### Security
@@ -33,14 +49,6 @@ listed together newest first, each section headed by its exact release tag:
 - **Linux-by-SSH collector:** refuses a login name that would read as an ssh option, a port outside
   1-65535 and a key outside `/var/lib/zabbix/ssh/`; the target follows `--`. The comment about
   passwords now says what is true: ssh's argv carries none, the script's own does (a Zabbix macro).
-
-### Probe VM
-- Docker is installed from Docker's apt repository with the signing key's fingerprint pinned, instead
-  of the `get.docker.com` script.
-
-### CI
-- Actions pinned to commits, permissions granted per job, provenance and SBOM attestations on the
-  probe image; `:latest` and a Release are only ever produced from `main`.
 
 ## [probe-vm/v0.3.3] - 2026-09-29
 
