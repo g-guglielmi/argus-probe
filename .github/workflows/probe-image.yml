@@ -271,7 +271,7 @@ jobs:
             echo "# pin exactly:          ghcr.io/${OWNER}/argus-probe:${VER}-r${REV}"
             echo '```'
             echo
-            echo "Probe hosts on Watchtower / unRAID auto-update; manual hosts, see \`deploy/README.md\`."
+            echo "Probes update from the Argus Probes page (with the argus-updater sidecar), the Unraid GUI or Dockhand; see \`deploy/README.md\`."
           } >> notes.md
 
           git tag -a "$TAG" -m "argus-probe: Zabbix ${VER} (r${REV})"

@@ -73,6 +73,11 @@ and exports `ZBX_START*` from it, so a start without Argus keeps the last ones. 
 To apply a new count Argus asks the `argus-updater` sidecar to restart the proxy (a few seconds; the
 proxy's buffer keeps unsent data); without the sidecar it applies at the next start.
 
+Each check-in also reports the CPU (`cpu`): the CPUs the container sees (`nproc`), a container CPU
+limit (cgroup v2 `cpu.max`, or the v1 CFS quota; 0 = none) and `/proc/loadavg`. Argus uses it to tell
+a probe short on processes from one short on CPU, where more processes would only queue. Inside a
+container the load average is the whole host's.
+
 ## Images & releases
 
 - Container: `ghcr.io/g-guglielmi/argus-probe` (built by `.github/workflows/probe-image.yml`).

@@ -18,23 +18,41 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
-**Probe image:**
+### Probe VM
+- Docker is installed from Docker's apt repository with the signing key's fingerprint pinned, instead
+  of the `get.docker.com` script.
+
+## [probe/v7.0.31-r9] - 2026-09-29
+
+### Added
+- The check-in reports the CPU (`cpu`): the CPUs the container sees, a container CPU limit (cgroup
+  v2 `cpu.max` or the v1 CFS quota; 0 = none) and the load average. Argus uses it to add no
+  processes to a probe short on CPU, and to tell the admin so. Every value is checked for shape
+  before it is sent.
+
+### Changed
+- The release notes no longer mention Watchtower: probes update from the Argus Probes page (with the
+  argus-updater sidecar), the Unraid GUI or Dockhand.
+
+## [probe/v7.0.31-r8] - 2026-09-29
+
+### Added
 - Zabbix process counts sized by Argus: the check-in reports the counts the proxy started with
   (`procs`) and which ones are set on the container (`procs_pinned`); at start the probe saves the
   counts Argus hands out to `procs.env` on its data volume (read as data, each value checked) and
   starts Zabbix with them. A `ZBX_START*` variable on the container still wins, and the image
   defaults stay (5 ICMP pingers, Zabbix's own for the rest). An Argus without the feature changes
   nothing.
+
+## [probe/v7.0.31-r7] - 2026-09-29
+
+### Security
 - The XCP-NG and Linux SSH collectors (and the sweep script's manual mode) wipe their own command
   line as soon as they have read their arguments, so a password Zabbix hands them as an argument
   shows in `ps`, `top`, `docker top` or a support bundle only during interpreter start-up, not for
   the whole check. Zabbix can pass a value to an external check no other way; the proxy's own
   configuration database holds the same macros, so this closes the accidental capture, not access
   by whoever already runs inside the container.
-
-### Probe VM
-- Docker is installed from Docker's apt repository with the signing key's fingerprint pinned, instead
-  of the `get.docker.com` script.
 
 ### CI
 - Actions pinned to commits, permissions granted per job, provenance and SBOM attestations on the
