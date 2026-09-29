@@ -40,6 +40,34 @@ valid_url() {
     *) return 1;;
   esac
 }
+# --- Zabbix process counts (sized by Argus) ---
+# Zabbix reads StartPingers, StartPollers and the rest only when the proxy starts. Argus watches how
+# busy each kind is and hands out the counts it wants at check-in; they are kept in procs.env (data,
+# like proxy.env: one NAME=number per line, each checked before use) so a start without Argus keeps
+# the last ones. A ZBX_START* variable set on the container always wins, and Argus is told so.
+PROCS_FILE="$CERTS/procs.env"
+PROC_NAMES="StartPingers StartPollers StartPollersUnreachable StartAgentPollers StartSNMPPollers StartHTTPAgentPollers StartTrappers StartDBSyncers StartPreprocessors"
+# The image's own defaults: Zabbix's, except five ICMP pingers (one queues every ping behind fping
+# waiting out slow or silent devices; five idle ones cost a few MB).
+proc_default() {
+  case "$1" in
+    StartPingers|StartPollers|StartTrappers) echo 5;;
+    StartDBSyncers) echo 4;;
+    StartPreprocessors) echo 16;;
+    *) echo 1;;
+  esac
+}
+proc_var() { printf 'ZBX_%s' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"; }
+valid_count() { case "$1" in ''|*[!0-9]*) return 1;; esac; [ "${#1}" -le 4 ] && [ "$1" -ge 1 ] && [ "$1" -le 1000 ]; }
+# Empty (and success) when there is no procs.env yet: this runs under set -e.
+read_proc() { [ -f "$PROCS_FILE" ] || return 0; sed -n "s/^$1=//p" "$PROCS_FILE" | head -n1; }
+# The counts set on the container, noted before anything below exports its own.
+PROCS_PINNED=""
+for _n in $PROC_NAMES; do
+  eval "_v=\${$(proc_var "$_n"):-}"
+  if [ -n "$_v" ]; then PROCS_PINNED="$PROCS_PINNED $_n"; fi
+done
+
 # drop VAR LABEL - clear a value that failed its check, saying so.
 drop() { echo "argus-probe: ignoring an unexpected $2 value from Argus" >&2; eval "$1=''"; }
 write_meta() {
@@ -131,30 +159,48 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ "${PROBE_TOKEN:-}" != "$PRIOR_TOKEN" ]; then
   echo "argus-probe: check-in credential saved to the data volume - you can remove ARGUS_PROBE_TOKEN now"
 fi
 
-# --- central core-host sync (fleet re-point) ---
+# --- start-time sync with Argus: core host (fleet re-point) and process counts ---
 # Re-fetch the core host from Argus at every start, so changing ARGUS_PROBE_CORE_HOST centrally
 # re-points the whole fleet on the next restart - no re-enrollment. The check-in response carries
 # the current core_host; we apply it to the baked value (an explicit ZBX_SERVER_HOST below still
 # wins) and persist it so it survives a later Argus outage. Best-effort and fail-safe: any failure
 # (older Argus, transient network, unset value) keeps the last known CORE_HOST, so nothing can
-# strand the probe. Skipped when ZBX_SERVER_HOST already pins the host.
+# strand the probe. The core host part is skipped when ZBX_SERVER_HOST already pins the host. The
+# same answer carries the process counts Argus wants: saved to procs.env and applied below.
 PROBE_VERSION="$(cat /etc/argus-probe.version 2>/dev/null || echo dev)"
-if [ -z "${ZBX_SERVER_HOST:-}" ] && [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
+if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
   SYNC=$(curl -sS -m 15 \
     -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
     -d "$(jq -nc --arg v "$PROBE_VERSION" '{version:$v}')" \
     "$CHECKIN_URL" 2>/dev/null || true)
-  NEW_HOST=$(printf '%s' "$SYNC" | jq -r '.core_host // ""' 2>/dev/null || true)
-  if [ -n "$NEW_HOST" ] && ! valid_host "$NEW_HOST"; then
-    echo "argus-probe: ignoring an unexpected core host value from Argus (keeping ${CORE_HOST:-<unset>})" >&2
-    NEW_HOST=""
+  if [ -z "${ZBX_SERVER_HOST:-}" ]; then
+    NEW_HOST=$(printf '%s' "$SYNC" | jq -r '.core_host // ""' 2>/dev/null || true)
+    if [ -n "$NEW_HOST" ] && ! valid_host "$NEW_HOST"; then
+      echo "argus-probe: ignoring an unexpected core host value from Argus (keeping ${CORE_HOST:-<unset>})" >&2
+      NEW_HOST=""
+    fi
+    if [ -n "$NEW_HOST" ] && [ "$NEW_HOST" != "${CORE_HOST:-}" ]; then
+      echo "argus-probe: core host updated by Argus: ${CORE_HOST:-<unset>} -> $NEW_HOST"
+      CORE_HOST="$NEW_HOST"
+      write_meta
+    fi
   fi
-  if [ -n "$NEW_HOST" ] && [ "$NEW_HOST" != "${CORE_HOST:-}" ]; then
-    echo "argus-probe: core host updated by Argus: ${CORE_HOST:-<unset>} -> $NEW_HOST"
-    CORE_HOST="$NEW_HOST"
-    write_meta
+  # An answer without "procs" (an older Argus, autoscaling off, a failed call) keeps procs.env.
+  if printf '%s' "$SYNC" | jq -e '.procs | type == "object"' >/dev/null 2>&1; then
+    _tmp="$PROCS_FILE.new"
+    : > "$_tmp"
+    chmod 600 "$_tmp" 2>/dev/null || true
+    for _n in $PROC_NAMES; do
+      _v=$(printf '%s' "$SYNC" | jq -r --arg n "$_n" '.procs[$n] // empty | if type == "number" then floor | tostring else empty end' 2>/dev/null || true)
+      if [ -n "$_v" ]; then
+        if valid_count "$_v"; then printf '%s=%s\n' "$_n" "$_v" >> "$_tmp"; else echo "argus-probe: ignoring an unexpected $_n count from Argus" >&2; fi
+      fi
+    done
+    mv -f "$_tmp" "$PROCS_FILE"
   fi
 fi
+chown root:root "$PROCS_FILE" 2>/dev/null || true
+chmod 600 "$PROCS_FILE" 2>/dev/null || true
 
 # An explicit ZBX_SERVER_HOST always wins (lets you re-point a probe without re-enrolling); else
 # use the core host baked in at enrollment (or just refreshed from Argus above).
@@ -169,11 +215,26 @@ export ZBX_SERVER_HOST="$CORE_HOST"
 export ZBX_PROXYMODE=0
 export ZBX_PROXYOFFLINEBUFFER="${ZBX_PROXYOFFLINEBUFFER:-168}"
 export ZBX_PROXYLOCALBUFFER="${ZBX_PROXYLOCALBUFFER:-0}"
-# ICMP pingers: Zabbix's default is one, and every Base Ping host's checks queue behind it while fping
-# waits out slow or silent devices - a mid-size site already kept it ~60% busy. Five idle pingers cost
-# a few MB and only fork fping when there's work. Zabbix can't scale them at runtime (StartPingers is
-# read at start); an explicit ZBX_STARTPINGERS still wins.
-export ZBX_STARTPINGERS="${ZBX_STARTPINGERS:-5}"
+# Process counts: the container's own ZBX_START* wins; else the count Argus handed out (procs.env);
+# else the image default. PROCS_JSON is what this start runs with, reported at every check-in so
+# Argus knows when a change it made has been applied.
+PROCS_JSON='{}'
+for _n in $PROC_NAMES; do
+  _var=$(proc_var "$_n")
+  case " $PROCS_PINNED " in
+    *" $_n "*) eval "_v=\${$_var:-}";;
+    *)
+      _v=$(read_proc "$_n")
+      valid_count "$_v" || _v=$(proc_default "$_n")
+      export "$_var=$_v"
+      ;;
+  esac
+  if valid_count "$_v"; then
+    PROCS_JSON=$(printf '%s' "$PROCS_JSON" | jq -c --arg n "$_n" --argjson v "$_v" '. + {($n): $v}')
+  fi
+done
+PROCS_PINNED_JSON=$(printf '%s' "$PROCS_PINNED" | jq -Rc 'split(" ") | map(select(length > 0))')
+echo "argus-probe: Zabbix processes: $(printf '%s' "$PROCS_JSON" | jq -r 'to_entries | map("\(.key)=\(.value)") | join(" ")')${PROCS_PINNED:+ (set on the container:$PROCS_PINNED)}"
 export ZBX_TLSCONNECT=cert
 export ZBX_TLSACCEPT=cert
 export ZBX_TLSCAFILE="$CA"
@@ -213,7 +274,8 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
     while true; do
       RESP=$(curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
-        -d "$(jq -nc --arg v "$PROBE_VERSION" '{version:$v, scans:true, sweeps:true}')" \
+        -d "$(jq -nc --arg v "$PROBE_VERSION" --argjson procs "$PROCS_JSON" --argjson pinned "$PROCS_PINNED_JSON" \
+              '{version:$v, scans:true, sweeps:true, procs:$procs, procs_pinned:$pinned}')" \
         "$CHECKIN_URL" 2>/dev/null || true)
       JOB=$(printf '%s' "$RESP" | jq -c '.scan // empty' 2>/dev/null || true)
       if [ -n "$JOB" ]; then

@@ -56,6 +56,23 @@ Both POST their raw facts back to `POST /api/probes/scan-results`, run one at a 
 (lock files), and keep the probe a pure reporter with no listening port; an older Argus that never
 sends `scan`/`sweep` leaves the branches inert.
 
+## Zabbix process counts
+
+Zabbix reads its process counts (`StartPingers`, `StartPollers`, `StartTrappers`, ...) only when the
+proxy starts, and Argus sizes them from the probe's own load (argus-core DESIGN 18c). Each check-in
+reports the counts this start runs with (`procs`) and which of them were set on the container
+(`procs_pinned`). At start the entrypoint asks Argus for the counts it wants, saves them to
+`enroll/procs.env` on the data volume (root-owned; read as data, every value checked to be 1-1000)
+and exports `ZBX_START*` from it, so a start without Argus keeps the last ones. Precedence:
+
+1. a `ZBX_START*` variable set on the container (Argus is told and leaves that kind alone);
+2. the count Argus handed out;
+3. the image default: Zabbix's, except **5** ICMP pingers (one pinger queues every ping behind
+   `fping` waiting out slow or silent devices).
+
+To apply a new count Argus asks the `argus-updater` sidecar to restart the proxy (a few seconds; the
+proxy's buffer keeps unsent data); without the sidecar it applies at the next start.
+
 ## Images & releases
 
 - Container: `ghcr.io/g-guglielmi/argus-probe` (built by `.github/workflows/probe-image.yml`).
