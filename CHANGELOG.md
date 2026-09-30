@@ -33,6 +33,16 @@ healthcheck).
 - The Release is published beside the probe image releases and no longer takes the repository's
   Latest mark from them.
 
+## [probe/v7.0.31-r13] - 2026-09-30
+
+### Added
+- The Linux-over-SSH collector can report systemd units and Docker containers in the same session:
+  the units listed in the host's options (`systemctl show`, no privileges needed) and the containers
+  whose name matches its filter (`docker ps -a`, which needs docker rights). Each is reported running
+  or not with its state (`failed (failed), result exit-code`, `Exited (1) 2 hours ago`); a unit name
+  is checked before it reaches the remote command line, and the container filter is applied by the
+  collector, never on the target. A host without either option is polled exactly as before.
+
 ## [probe/v7.0.31-r12] - 2026-09-29
 
 ### Fixed

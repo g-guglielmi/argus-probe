@@ -20,7 +20,8 @@
 # Needs the system `ssh` client on the collector host (openssh-client), and `sshpass` for password
 # auth (both baked into the argus-probe image / installed on the core by setup-core.sh). Stdlib only.
 #
-# Usage (as Zabbix runs it): argus_linux_ssh.py <host> <user> <port> <auth> <password> <keyfile>
+# Usage (as Zabbix runs it):
+#   argus_linux_ssh.py <host> <user> <port> <auth> <password> <keyfile> [<units> [<containers>]]
 #   host      - the Linux box (the template passes {HOST.CONN})
 #   user      - SSH login user (a read-only account is enough; default "root")
 #   port      - SSH port (default 22)
@@ -29,6 +30,11 @@
 #               argument; the script wipes its own command line as soon as it has read it, and ssh
 #               never sees it on argv: sshpass reads it from the environment.
 #   keyfile   - path ON THIS COLLECTOR to the private key, for auth=key
+#   units     - optional: systemd units to watch, comma or space separated ("nginx, jellyfin"); each
+#               reports whether it is active and its state ("failed (exit-code)") from
+#               `systemctl show`, which needs no privileges
+#   containers - optional: a regular expression of Docker container names to watch (matched here,
+#               never on the target); the login must be allowed to run `docker ps`
 #
 # A connection/auth/parse failure is NOT an error: it prints reachable=0 so the template's down
 # trigger fires (max(linux.ssh.reachable,#3)=0) instead of the items going unsupported, and says why
@@ -41,7 +47,8 @@ import json
 import subprocess
 
 # One remote snippet, POSIX sh so it runs on any Linux (bash not required). Sections are fenced with
-# @@TAGs the parser splits on. Two /proc/stat samples one second apart give a real CPU-utilisation
+# @@TAGs the parser splits on (remote_snippet adds the optional units / containers sections before
+# @@END). Two /proc/stat samples one second apart give a real CPU-utilisation
 # delta; everything else is a single read. Kept deliberately small and read-only.
 REMOTE = (
     "echo @@STAT1; cat /proc/stat 2>/dev/null; "
@@ -53,8 +60,91 @@ REMOTE = (
     "echo @@UP; cat /proc/uptime 2>/dev/null; "
     "echo @@DF; df -P -B1 2>/dev/null; "
     "echo @@NET; cat /proc/net/dev 2>/dev/null; "
-    "echo @@END"
 )
+
+# A unit name the collector passes to systemctl: systemd's own characters, never a leading "-" (and
+# "--" ends the options anyway). At most MAX_UNITS per host.
+UNIT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9@._:-]{0,127}")
+MAX_UNITS = 50
+
+
+def remote_snippet(units, docker):
+    """The one command the SSH session runs: the base readings, then the asked-for units and
+    containers. units are validated names; docker is True when a container filter is set."""
+    out = REMOTE
+    if units:
+        out += ("echo @@UNITS; systemctl show --no-pager --property=Id,LoadState,ActiveState,SubState,Result -- "
+                + " ".join(units) + " 2>&1; ")
+    if docker:
+        out += "echo @@DOCKER; docker ps -a --no-trunc --format '{{.Names}}|{{.Status}}' 2>&1; rc=$?; echo @@DOCKERRC; echo $rc; "
+    return out + "echo @@END"
+
+
+def parse_units(block, wanted):
+    """systemctl show prints one key=value block per unit, blank-line separated, in the order asked:
+    one entry per wanted unit, {name, active 1|0, state}."""
+    blocks, cur = [], {}
+    for line in block.splitlines():
+        line = line.strip()
+        if not line:
+            if cur:
+                blocks.append(cur)
+                cur = {}
+            continue
+        k, sep, v = line.partition("=")
+        if sep:
+            cur[k] = v
+    if cur:
+        blocks.append(cur)
+    if not blocks:
+        why = " ".join(block.split())[:200] or "systemctl gave no answer"
+        if "not found" in why and "systemctl" in why:
+            why = "systemd is not available on this host"
+        return [{"name": u, "active": 0, "state": why} for u in wanted]
+    by_id = {b.get("Id", ""): b for b in blocks}
+    out = []
+    for i, u in enumerate(wanted):
+        b = by_id.get(u) or by_id.get(u + ".service") or (blocks[i] if i < len(blocks) else {})
+        load, act, sub, res = b.get("LoadState", ""), b.get("ActiveState", ""), b.get("SubState", ""), b.get("Result", "")
+        if not b:
+            state = "systemctl gave no answer for this unit"
+        elif load == "not-found":
+            state = "not found (no such unit on this host)"
+        else:
+            state = (act or "unknown") + (" (" + sub + ")" if sub else "")
+            if res and res != "success":
+                state += ", result " + res
+            if load == "masked":
+                state += ", masked"
+        out.append({"name": u, "active": 1 if act == "active" else 0, "state": state[:200]})
+    return out
+
+
+def parse_docker(block, rc, pattern):
+    """docker ps -a lines ("name|status") matching the filter -> [{name, running 1|0, status}], or
+    the reason docker couldn't be read. Up and healthy (or with no healthcheck) counts as running;
+    paused, unhealthy, restarting, exited or created don't."""
+    lines = [l.strip() for l in block.splitlines() if l.strip()]
+    if rc != 0:
+        msg = lines[-1] if lines else "docker ps failed"
+        low = msg.lower()
+        if "permission denied" in low:
+            msg = "the SSH login may not run docker ps (permission denied on the Docker socket)"
+        elif "cannot connect to the docker daemon" in low:
+            msg = "the Docker daemon is not running"
+        elif "not found" in low and "docker" in low:
+            msg = "docker is not installed on this host"
+        return [], " ".join(msg.split())[:200]
+    out = []
+    for l in lines:
+        name, sep, status = l.partition("|")
+        if not sep or not pattern.search(name):
+            continue
+        st = " ".join(status.split())[:120]
+        running = 1 if st.startswith("Up") and "(Paused)" not in st and "(unhealthy)" not in st else 0
+        out.append({"name": name, "running": running, "status": st})
+    return out, ""
+
 
 # Filesystem types / mount roots that are never real storage - filtered here so the LLD only ever
 # sees actual mounts (the template's {$FS.NAME.SKIP} macro can trim further per host).
@@ -70,6 +160,8 @@ OUT = {
     "uptime": None,
     "fs": [], "net": [],
     "fs_discovery": [], "net_discovery": [],
+    "units": [], "unit_discovery": [],
+    "containers": [], "container_discovery": [], "docker_error": "",
 }
 
 
@@ -77,7 +169,7 @@ def emit():
     print(json.dumps(OUT))
 
 
-def ssh_command(host, user, port, auth, keyfile):
+def ssh_command(host, user, port, auth, keyfile, snippet):
     common = [
         "-o", "ConnectTimeout=8",
         "-o", "StrictHostKeyChecking=accept-new",
@@ -95,14 +187,14 @@ def ssh_command(host, user, port, auth, keyfile):
         return ["sshpass", "-e", "ssh",
                 "-o", "PubkeyAuthentication=no",
                 "-o", "PreferredAuthentications=password,keyboard-interactive"] + \
-            common + ["--", target, REMOTE]
+            common + ["--", target, snippet]
     # Key auth is genuinely non-interactive, so BatchMode=yes here fails fast instead of ever prompting.
     return ["ssh",
             "-i", keyfile,
             "-o", "BatchMode=yes",
             "-o", "PasswordAuthentication=no",
             "-o", "PreferredAuthentications=publickey"] + \
-        common + ["--", target, REMOTE]
+        common + ["--", target, snippet]
 
 
 def reason(e):
@@ -248,7 +340,7 @@ def scrub_cmdline(title):
 
 def main():
     if len(sys.argv) < 2 or not sys.argv[1]:
-        sys.stderr.write("usage: argus_linux_ssh.py <host> <user> <port> <auth> <password> <keyfile>\n")
+        sys.stderr.write("usage: argus_linux_ssh.py <host> <user> <port> <auth> <password> <keyfile> [<units> [<containers>]]\n")
         sys.exit(1)
     host = sys.argv[1]
     user = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else "root"
@@ -256,6 +348,8 @@ def main():
     auth = (sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else "key").lower()
     passwd = sys.argv[5] if len(sys.argv) > 5 else ""
     keyfile = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else "/var/lib/zabbix/ssh/argus_id"
+    units_arg = sys.argv[7] if len(sys.argv) > 7 else ""
+    containers_arg = (sys.argv[8] if len(sys.argv) > 8 else "").strip()
     scrub_cmdline("argus_linux_ssh.py")
     # The values are macros an Argus admin typed; they become ssh arguments here, so they must be a
     # login name, a port and a key inside the collector's ssh dir - never something ssh would parse
@@ -270,7 +364,21 @@ def main():
         sys.stderr.write("argus_linux_ssh.py: the key must live under /var/lib/zabbix/ssh/\n")
         sys.exit(1)
 
-    cmd = ssh_command(host, user, port, auth, keyfile)
+    # Units: each name checked before it reaches the remote command line; a bad one is reported as such.
+    wanted, seen = [], set()
+    for u in re.split(r"[,\s]+", units_arg.strip()):
+        if u and u not in seen and len(wanted) < MAX_UNITS:
+            seen.add(u)
+            wanted.append(u)
+    good = [u for u in wanted if UNIT_RE.fullmatch(u)]
+    pattern = None
+    if containers_arg:
+        try:
+            pattern = re.compile(containers_arg[:256])
+        except re.error as e:
+            OUT["docker_error"] = "the container filter is not a valid regular expression: %s" % e
+
+    cmd = ssh_command(host, user, port, auth, keyfile, remote_snippet(good, pattern is not None))
     env = dict(os.environ)
     if auth == "password":
         env["SSHPASS"] = passwd
@@ -331,6 +439,16 @@ def main():
             OUT["load1"], OUT["load5"], OUT["load15"] = float(load[0]), float(load[1]), float(load[2])
         except ValueError:
             pass
+
+    if wanted:
+        got = {u["name"]: u for u in parse_units(sec.get("UNITS", ""), good)} if good else {}
+        for u in wanted:
+            OUT["units"].append(got.get(u) or {"name": u, "active": 0, "state": "not a valid unit name"})
+            OUT["unit_discovery"].append({"{#UNIT}": u})
+    if pattern is not None:
+        rc = sec.get("DOCKERRC", "").strip()
+        OUT["containers"], OUT["docker_error"] = parse_docker(sec.get("DOCKER", ""), int(rc) if rc.isdigit() else 1, pattern)
+        OUT["container_discovery"] = [{"{#CONTAINER}": c["name"]} for c in OUT["containers"]]
 
     up = sec.get("UP", "").strip().split()
     if up:
