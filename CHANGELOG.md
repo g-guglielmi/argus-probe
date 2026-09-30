@@ -18,6 +18,20 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r14] - 2026-09-30
+
+### Added
+- The Linux-over-SSH collector reports the systemd units that are failed (any unit, from
+  `systemctl list-units --state=failed`, no privileges needed) with their names, and the CPU time
+  spent waiting on storage (iowait) and taken by the hypervisor for other guests (steal).
+- A TCP port collector, `argus_tcp.py`: connects to every listed port of a host at once and reports,
+  per port, whether it answered, the connect time and, when it didn't, why (refused, no answer, no
+  route to host). Nothing is sent over the connection.
+
+### Fixed
+- The Linux-over-SSH collector no longer counts guest CPU time twice in the utilization of a host that
+  runs VMs itself.
+
 ## [probe-vm/v0.3.4] - 2026-09-30
 
 Refresh of the probe appliance golden image. Existing VMs are not changed by this; it is what a new

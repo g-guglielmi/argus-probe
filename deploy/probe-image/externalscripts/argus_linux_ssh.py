@@ -36,6 +36,10 @@
 #   containers - optional: a regular expression of Docker container names to watch (matched here,
 #               never on the target); the login must be allowed to run `docker ps`
 #
+# Always read too, when the host runs systemd: the units systemd reports failed (any unit, named or
+# not, from `systemctl list-units --state=failed`, no privileges needed), and the CPU time spent
+# waiting on disk (iowait) and taken by the hypervisor for other guests (steal).
+#
 # A connection/auth/parse failure is NOT an error: it prints reachable=0 so the template's down
 # trigger fires (max(linux.ssh.reachable,#3)=0) instead of the items going unsupported, and says why
 # in "error" (the line ssh printed, e.g. "Permission denied (publickey)"). Only bad arguments exit
@@ -60,6 +64,7 @@ REMOTE = (
     "echo @@UP; cat /proc/uptime 2>/dev/null; "
     "echo @@DF; df -P -B1 2>/dev/null; "
     "echo @@NET; cat /proc/net/dev 2>/dev/null; "
+    "echo @@FAILED; systemctl list-units --state=failed --no-legend --plain --no-pager 2>&1; rc=$?; echo @@FAILEDRC; echo $rc; "
 )
 
 # A unit name the collector passes to systemctl: systemd's own characters, never a leading "-" (and
@@ -160,6 +165,8 @@ OUT = {
     "uptime": None,
     "fs": [], "net": [],
     "fs_discovery": [], "net_discovery": [],
+    "cpu_iowait": None, "cpu_steal": None,
+    "systemd_discovery": [], "failed_units": None, "failed_names": "", "failed_error": "",
     "units": [], "unit_discovery": [],
     "containers": [], "container_discovery": [], "docker_error": "",
 }
@@ -235,16 +242,62 @@ def known_hosts_path():
 
 
 def parse_stat(block):
-    # The aggregate "cpu " line: user nice system idle iowait irq softirq steal ...
+    # The aggregate "cpu " line: user nice system idle iowait irq softirq steal guest guest_nice.
+    # guest and guest_nice are already inside user and nice, so the total stops at steal.
     for line in block.splitlines():
         if line.startswith("cpu "):
             vals = [int(x) for x in line.split()[1:] if x.isdigit()]
             if len(vals) < 4:
                 return None
             idle = vals[3] + (vals[4] if len(vals) > 4 else 0)  # idle + iowait
-            total = sum(vals)
-            return total, idle
+            total = sum(vals[:8])
+            iowait = vals[4] if len(vals) > 4 else None
+            steal = vals[7] if len(vals) > 7 else None
+            return {"total": total, "idle": idle, "iowait": iowait, "steal": steal}
     return None
+
+
+def cpu_shares(s1, s2):
+    """CPU utilisation, iowait and steal in percent between two parse_stat samples (None where a
+    counter is missing or the samples are unusable)."""
+    out = {"util": None, "iowait": None, "steal": None}
+    if not s1 or not s2:
+        return out
+    dt = s2["total"] - s1["total"]
+    if dt <= 0:
+        return out
+    out["util"] = round(100.0 * (dt - (s2["idle"] - s1["idle"])) / dt, 2)
+    for k in ("iowait", "steal"):
+        if s1[k] is not None and s2[k] is not None:
+            out[k] = round(max(0.0, 100.0 * (s2[k] - s1[k]) / dt), 2)
+    return out
+
+
+# At most this many failed unit names in the reason ("... and 3 more" after that).
+MAX_FAILED_NAMES = 20
+
+
+def parse_failed(block, rc):
+    """systemctl list-units --state=failed -> (count, "a.service, b.timer", error). No systemd on the
+    host -> (None, "", "") so the sensor is never discovered; systemctl failing -> its reason."""
+    lines = [l.strip() for l in block.splitlines() if l.strip()]
+    if rc == 127 or any("systemctl: not found" in l or "systemctl: command not found" in l for l in lines):
+        return None, "", ""
+    if any(l.startswith("System has not been booted with systemd") for l in lines):
+        return None, "", ""
+    if rc != 0:
+        return None, "", (lines[-1] if lines else "systemctl failed")[:200]
+    names = []
+    for l in lines:
+        # One unit per line: its name first (a bullet in front on a systemd too old for --plain).
+        # A unit name always carries its type suffix, and may hold escapes ("dev-disk-by\x2duuid").
+        tok = l.lstrip("*\u25cf ").split()
+        if tok and "." in tok[0] and len(tok[0]) <= 256:
+            names.append(tok[0])
+    shown = ", ".join(names[:MAX_FAILED_NAMES])
+    if len(names) > MAX_FAILED_NAMES:
+        shown += " and %d more" % (len(names) - MAX_FAILED_NAMES)
+    return len(names), shown, ""
 
 
 def parse_meminfo(block):
@@ -410,13 +463,14 @@ def main():
     OUT["reachable"] = 1
     OUT["authed"] = 1
 
-    s1 = parse_stat(sec.get("STAT1", ""))
-    s2 = parse_stat(sec.get("STAT2", ""))
-    if s1 and s2:
-        dt = s2[0] - s1[0]
-        di = s2[1] - s1[1]
-        if dt > 0:
-            OUT["cpu_util"] = round(100.0 * (dt - di) / dt, 2)
+    shares = cpu_shares(parse_stat(sec.get("STAT1", "")), parse_stat(sec.get("STAT2", "")))
+    OUT["cpu_util"], OUT["cpu_iowait"], OUT["cpu_steal"] = shares["util"], shares["iowait"], shares["steal"]
+
+    frc = sec.get("FAILEDRC", "").strip()
+    count, names, ferr = parse_failed(sec.get("FAILED", ""), int(frc) if frc.isdigit() else 1)
+    if count is not None or ferr:
+        OUT["systemd_discovery"] = [{"{#SYSTEMD}": "systemd"}]
+    OUT["failed_units"], OUT["failed_names"], OUT["failed_error"] = count, names, ferr
 
     cpun = sec.get("CPUN", "").strip().split()
     if cpun and cpun[0].isdigit():
