@@ -127,6 +127,20 @@ before enrollment, so the VM comes up on its fixed address with no interaction. 
 first-boot page can't collect it, since you'd need an IP to reach the page.) A VM stuck without network
 isn't enrolled yet, so it's recoverable the same way - attach a corrected seed and reboot.
 
+## Folders
+
+The probe container keeps its files in `/docker/<container name>`, the layout the core VM and the Add
+probe wizard's `docker run` use too (the argus-core repo's
+[docs/folder-layout.md](https://github.com/g-guglielmi/argus-core/blob/main/docs/folder-layout.md)):
+
+| Host folder | Mounted in | Holds |
+|---|---|---|
+| `/docker/argus-probe` | `argus-probe` as `/var/lib/zabbix`, `argus-updater` as `/probe` (read-only) | The proxy's database and its 7-day buffer, its TLS certificates (`ssl/`), the enrollment state (`enroll/`) |
+| `/docker/argus-probe/snmptraps` | `argus-probe` as `/var/lib/zabbix/snmptraps` | The SNMP traps it receives |
+
+The enrollment settings are in `/etc/argus-probe/probe.env` (root only). `argus-updater` keeps no
+files of its own.
+
 ## Scope / not yet
 
 - **Fleet self-update for VM probes.** The golden image runs **two** containers, installed as two

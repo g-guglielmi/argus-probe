@@ -18,7 +18,7 @@ import re
 import subprocess
 import urllib.request
 
-META = "/var/lib/argus-probe/enroll/proxy.env"  # written by the probe container at enrollment
+META = "/docker/argus-probe/enroll/proxy.env"  # written by the probe container at enrollment
 
 
 def read_kv(path):

@@ -21,7 +21,7 @@ ExecStartPre=-/usr/bin/docker rm -f argus-updater
 ExecStartPre=/usr/bin/docker pull ${ARGUS_UPDATER_IMAGE}:${ARGUS_UPDATER_TAG}
 ExecStart=/usr/bin/docker run -d --name argus-updater --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /var/lib/argus-probe:/probe:ro \
+  -v /docker/argus-probe:/probe:ro \
   -e ARGUS_UPDATER_MODE=probe-watch \
   -e ARGUS_PROXY_CONTAINER=argus-probe \
   ${ARGUS_UPDATER_IMAGE}:${ARGUS_UPDATER_TAG}

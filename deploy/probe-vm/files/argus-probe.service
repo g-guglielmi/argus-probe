@@ -26,9 +26,11 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=-/usr/bin/docker rm -f argus-probe
 ExecStartPre=/usr/bin/docker pull ${ARGUS_PROBE_IMAGE}:${ARGUS_PROBE_TAG}
+# The probe's folder follows /docker/<container name>, like the core and the Add probe wizard's
+# docker run (the argus-core repo's docs/folder-layout.md).
 ExecStart=/usr/bin/docker run -d --name argus-probe --restart unless-stopped \
-  -v /var/lib/argus-probe:/var/lib/zabbix \
-  -v /var/lib/argus-probe/snmptraps:/var/lib/zabbix/snmptraps \
+  -v /docker/argus-probe:/var/lib/zabbix \
+  -v /docker/argus-probe/snmptraps:/var/lib/zabbix/snmptraps \
   --env-file /etc/argus-probe/probe.env \
   ${ARGUS_PROBE_IMAGE}:${ARGUS_PROBE_TAG}
 ExecStop=-/usr/bin/docker stop argus-probe

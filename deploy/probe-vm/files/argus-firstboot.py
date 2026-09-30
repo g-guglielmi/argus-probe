@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 ENV_PATH = "/etc/argus-probe/probe.env"
-ENROLL_DIR = "/var/lib/argus-probe/enroll"
+ENROLL_DIR = "/docker/argus-probe/enroll"
 CERT = os.path.join(ENROLL_DIR, "proxy.crt")
 META = os.path.join(ENROLL_DIR, "proxy.env")
 PROBE_SERVICE = "argus-probe.service"
@@ -51,8 +51,8 @@ SEED_MOUNT = "/run/argus-seed"
 # hypervisor console (or SSH over the VPN) if something goes wrong. The password is set on the local
 # user and cached root-only so a failed report can retry without changing it.
 BG_USER = "argus"
-BG_SECRET_FILE = "/var/lib/argus-probe/break-glass.secret"
-BG_DONE = "/var/lib/argus-probe/break-glass.reported"
+BG_SECRET_FILE = "/docker/argus-probe/break-glass.secret"
+BG_DONE = "/docker/argus-probe/break-glass.reported"
 
 # The setup page is reachable by anyone on the VM's network until the probe is enrolled, and what it
 # collects decides which server this VM trusts. So a submission must carry a one-time SETUP CODE that

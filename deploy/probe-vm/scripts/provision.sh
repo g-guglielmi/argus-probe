@@ -44,7 +44,9 @@ install -D -m 0755 "$FILES/argus-os-report.py"         /usr/local/bin/argus-os-r
 install -D -m 0644 "$FILES/argus-os-report.service"    /etc/systemd/system/argus-os-report.service
 install -D -m 0644 "$FILES/argus-os-report.timer"      /etc/systemd/system/argus-os-report.timer
 install -D -m 0600 "$FILES/probe.env.example"          /etc/argus-probe/probe.env.example
-install -d -m 0755 /var/lib/argus-probe
+# The probe container's folder: /docker/<container name> (the argus-core repo's docs/folder-layout.md).
+install -d -m 0755 /docker
+install -d -m 0755 /docker/argus-probe
 
 echo "==> hardening SSH (no root login; password login only for the break-glass account)"
 # Password login is off for every account but the break-glass user "argus" (keys still work for
