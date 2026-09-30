@@ -18,9 +18,20 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
-### Probe VM
+## [probe-vm/v0.3.4] - 2026-09-30
+
+Refresh of the probe appliance golden image. Existing VMs are not changed by this; it is what a new
+deployment gets. The probe image is pre-pulled at build time from `:latest` (`probe/v7.0.31-r12`
+today: collector failure reasons, the UniFi controller MAC for scanned devices, the container
+healthcheck).
+
+### Security
 - Docker is installed from Docker's apt repository with the signing key's fingerprint pinned, instead
   of the `get.docker.com` script.
+
+### Changed
+- The Release is published beside the probe image releases and no longer takes the repository's
+  Latest mark from them.
 
 ## [probe/v7.0.31-r12] - 2026-09-29
 

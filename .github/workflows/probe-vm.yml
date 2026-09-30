@@ -126,6 +126,9 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          # The repo's Latest release stays the one people install from (the app, or the
+          # probe image); an appliance image is published beside it, never in its place.
+          make_latest: false
           files: |
             deploy/probe-vm/output/argus-probe-vm.ova
             deploy/probe-vm/output/argus-probe-vm.qcow2
