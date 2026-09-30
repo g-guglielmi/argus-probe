@@ -18,8 +18,14 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
-**Probe VM (next image):**
-- The probe container's files move to `/docker/argus-probe` (`/docker/<container name>`, like the core
+## [probe-vm/v0.3.5] - 2026-09-30
+
+Refresh of the probe appliance golden image: the new folder layout. It is what a new deployment gets.
+The probe image is pre-pulled at build time from `:latest` (`probe/v7.0.31-r14` today: failed systemd
+units, CPU iowait and steal, TCP port checks).
+
+### Changed
+- The probe container's files are in `/docker/argus-probe` (`/docker/<container name>`, like the core
   VM and the Add probe wizard's `docker run`): the proxy's database and buffer, its certificates, the
   enrollment state, and `snmptraps/`. The folders are listed in the probe VM README.
 
