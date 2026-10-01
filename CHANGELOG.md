@@ -18,6 +18,15 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r19] - 2026-10-01
+
+### Fixed
+- The HTTP collector's `self-signed` mode refused devices whose firmware sends its certificate with
+  the device's own "CA" that isn't marked as one (seen on a NAS and on UniFi gateways): the strict TLS
+  check said "invalid ca certificate". The mode now reads the certificate itself and checks what it
+  promises: valid now and, for a URL by name, issued for that name (its alternative names, else its
+  common name). A wrong name now says which names the certificate has.
+
 ## [probe/v7.0.31-r18] - 2026-10-01
 
 ### Added

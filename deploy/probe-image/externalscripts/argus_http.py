@@ -184,25 +184,110 @@ def _der(b, i):
     return tag, i, n, i + n
 
 
-def der_not_after(der):
-    """A certificate's notAfter (unix s) from its DER, read without the ssl module's verification
-    (an unverified connection only hands the raw certificate over)."""
+OID_CN = bytes([0x55, 0x04, 0x03])  # 2.5.4.3, commonName
+OID_SAN = bytes([0x55, 0x1D, 0x11])  # 2.5.29.17, subjectAltName
+
+
+def _time(tag, raw):
+    """A UTCTime (YYMMDDHHMMSSZ; RFC 5280: 50-99 are 19xx) or GeneralizedTime as unix s."""
+    s = raw.decode("ascii")
+    if tag == 0x17:
+        s = ("19" if int(s[:2]) >= 50 else "20") + s
+    return datetime.strptime(s, "%Y%m%d%H%M%SZ").replace(tzinfo=timezone.utc).timestamp()
+
+
+def _subject_cn(der, i, end):
+    """The common name in a Name (a SEQUENCE of SETs of type-value pairs), or ""."""
+    while i < end:
+        _, sc, sn, nxt = _der(der, i)  # a SET
+        k = sc
+        while k < sc + sn:
+            _, ac, _, k2 = _der(der, k)  # a type-value pair
+            _, oc, on, m = _der(der, ac)
+            if der[oc:oc + on] == OID_CN:
+                _, vc, vn, _ = _der(der, m)
+                return der[vc:vc + vn].decode("utf-8", "replace")
+            k = k2
+        i = nxt
+    return ""
+
+
+def der_cert(der):
+    """What the "self-signed" check needs from a certificate, read from its DER without the ssl
+    module (an unverified connection only hands the raw certificate over): its validity, its common
+    name, and the DNS names and IP addresses it lists as alternative names."""
     _, c, _, _ = _der(der, 0)  # Certificate
-    _, c, _, _ = _der(der, c)  # tbsCertificate
-    i = c
+    _, c, n, _ = _der(der, c)  # tbsCertificate
+    end, i = c + n, c
     tag, _, _, nxt = _der(der, i)
     if tag == 0xA0:  # [0] version
         i = nxt
     for _ in range(3):  # serialNumber, signature, issuer
         i = _der(der, i)[3]
-    _, c, _, _ = _der(der, i)  # validity
-    j = _der(der, c)[3]  # past notBefore
-    tag, c, n, _ = _der(der, j)  # notAfter
-    s = der[c:c + n].decode("ascii")
-    if tag == 0x17:  # UTCTime, YYMMDDHHMMSSZ (RFC 5280: 50-99 are 19xx)
-        year = int(s[:2])
-        s = ("19" if year >= 50 else "20") + s
-    return datetime.strptime(s, "%Y%m%d%H%M%SZ").replace(tzinfo=timezone.utc).timestamp()
+    _, vc, _, i = _der(der, i)  # validity
+    t1, c1, n1, j = _der(der, vc)
+    t2, c2, n2, _ = _der(der, j)
+    out = {"not_before": _time(t1, der[c1:c1 + n1]), "not_after": _time(t2, der[c2:c2 + n2]), "cn": "", "dns": [], "ips": []}
+    _, sc, sn, i = _der(der, i)  # subject
+    out["cn"] = _subject_cn(der, sc, sc + sn)
+    i = _der(der, i)[3]  # subjectPublicKeyInfo
+    while i < end:  # [1] / [2] unique ids, [3] extensions
+        tag, ec, _, nxt = _der(der, i)
+        if tag == 0xA3:
+            _, lc, ln, _ = _der(der, ec)
+            k = lc
+            while k < lc + ln:
+                _, xc, _, k2 = _der(der, k)  # Extension
+                _, oc, on, m = _der(der, xc)
+                oid = der[oc:oc + on]
+                t, vc2, _, m2 = _der(der, m)
+                if t == 0x01:  # critical
+                    t, vc2, _, _ = _der(der, m2)
+                if oid == OID_SAN and t == 0x04:
+                    _, gc, gn, _ = _der(der, vc2)  # GeneralNames
+                    g = gc
+                    while g < gc + gn:
+                        gt, nc, nn, g2 = _der(der, g)
+                        if gt == 0x82:  # dNSName
+                            out["dns"].append(der[nc:nc + nn].decode("ascii", "replace"))
+                        elif gt == 0x87:  # iPAddress
+                            out["ips"].append(ipaddress.ip_address(der[nc:nc + nn]).compressed)
+                        g = g2
+                k = k2
+        i = nxt
+    return out
+
+
+def der_not_after(der):
+    """A certificate's notAfter (unix s) from its DER."""
+    return der_cert(der)["not_after"]
+
+
+def name_matches(host, pattern):
+    """Whether a certificate name covers host: exactly, or a "*." wildcard for one leftmost label."""
+    host, pattern = host.lower().rstrip("."), pattern.lower().rstrip(".")
+    if pattern.startswith("*."):
+        first, _, rest = host.partition(".")
+        return bool(first) and rest == pattern[2:]
+    return host == pattern
+
+
+def self_signed_problem(info, host, now):
+    """Why the "self-signed" mode refuses a certificate, or "": it must be valid now and, for a URL by
+    name, list that name (or, listing none, have it as its common name). A device reached by its
+    address isn't name-checked: its own certificate names its hostname, rarely its address. Whether a
+    CA signed it, and how it is marked (devices often don't mark their own certificate as a CA, which
+    a strict TLS library refuses), doesn't matter here."""
+    if now < info["not_before"]:
+        return "the certificate is not valid yet"
+    if now >= info["not_after"]:
+        return "the certificate has expired"
+    if is_ip(host):
+        return ""
+    names = info["dns"] or ([info["cn"]] if info["cn"] else [])
+    if not any(name_matches(host, n) for n in names):
+        return "the certificate is for another name" + (" (%s)" % ", ".join(names[:3]) if names else "")
+    return ""
 
 
 def verify_reason(e):
@@ -214,6 +299,8 @@ def verify_reason(e):
         return "the certificate has expired"
     if "self-signed" in msg or "self signed" in msg:
         return "the certificate is not trusted: self-signed certificate"
+    if "invalid ca" in msg:
+        return "the certificate is not trusted: it isn't from a known CA (a device's own certificate? use self-signed)"
     if "unable to get local issuer" in msg or "unknown ca" in msg:
         return "the certificate is not trusted: its issuer is unknown"
     if "not yet valid" in msg:
@@ -278,16 +365,6 @@ def is_ip(host):
         return False
 
 
-def trusting(der, check_name):
-    """A context that trusts this one certificate as it is, and still checks its dates (and its name,
-    when asked): how a self-signed certificate (or one from a private CA) is verified in the
-    "self-signed" mode."""
-    ctx = ssl.create_default_context(cadata=der)
-    ctx.verify_flags |= getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)  # a leaf that isn't its own issuer
-    ctx.check_hostname = check_name
-    return ctx
-
-
 def certificate(u, mode, timeout):
     """The URL's certificate: (days left or None, why it isn't accepted or "", the open connection when
     it is). An untrusted certificate is read again without checking, for its expiry; in the
@@ -301,22 +378,19 @@ def certificate(u, mode, timeout):
         reason = verify_reason(e)
     try:
         conn, _ = connect(u, loose, timeout)
-        der = conn.sock.getpeercert(binary_form=True)
-        days = round((der_not_after(der) - time.time()) / 86400, 1)
+        info = der_cert(conn.sock.getpeercert(binary_form=True))
+        days = round((info["not_after"] - time.time()) / 86400, 1)
     except Exception:
         return None, reason, None
     if mode == "ignore":
         return days, reason, conn
+    if mode == "self-signed":
+        bad = self_signed_problem(info, u.hostname, time.time())
+        if not bad:
+            return days, "", conn
+        reason = bad
     conn.close()
-    if mode != "self-signed":
-        return days, reason, None
-    if days < 0:
-        return days, "the certificate has expired", None
-    try:
-        conn, _ = connect(u, trusting(der, not is_ip(u.hostname)), timeout)
-        return days, "", conn
-    except ssl.SSLCertVerificationError as e:
-        return days, verify_reason(e), None
+    return days, reason, None
 
 
 def fetch(entry, codes, mode, timeout):
