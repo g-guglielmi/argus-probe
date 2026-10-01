@@ -18,6 +18,17 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r15] - 2026-10-01
+
+### Added
+- An HTTP collector, `argus_http.py`: fetches every listed URL of a host at once and reports, per URL,
+  whether it answered as expected (an accepted status code after redirects, text the page must or
+  must not contain, a trusted certificate), the status code, the response time, the days its
+  certificate has left (read even when the certificate isn't trusted) and, when it didn't answer as
+  expected, why (`returned 502 Bad Gateway`, `the page does not contain "Welcome"`, `the certificate
+  is not trusted: self-signed certificate`, `no answer within 10 s`). It backs Argus core's
+  HTTP/HTTPS endpoint add-on.
+
 ## [probe-vm/v0.3.5] - 2026-09-30
 
 Refresh of the probe appliance golden image: the new folder layout. It is what a new deployment gets.
