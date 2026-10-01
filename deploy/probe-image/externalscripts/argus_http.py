@@ -20,10 +20,14 @@
 #   argus_http.py <host> <urls> [<scheme> <port> <expect> <verify> <timeout>]
 #   host     - the host's address (the template passes {HOST.CONN})
 #   urls     - comma or space separated, at most MAX_URLS; each a full http(s) URL
-#              ("https://portal.example.com/app"), or a path on the host's own address ("/login"). Blank
-#              checks the host's own address once. A URL can end in "#text": the page must contain text
-#              (case-insensitive; %20 for a space), or "#!text": it must not.
-#   scheme   - http or https, for paths and a blank list (default https)
+#              ("https://portal.example.com/app"), a host without a scheme ("10.0.0.20:8443/admin",
+#              which gets <scheme>), or a path on the host's own address ("/login"). Blank checks the
+#              host's own address once. Options for one URL go after "#", like a query:
+#              "#tls=self-signed&text=Welcome%20back" - tls (verify, self-signed or ignore) checks its
+#              certificate unlike the host's <verify>, text is text the page must contain
+#              (case-insensitive, %20 for a space), notext text it must not. The older "#text" and
+#              "#!text" still read as text and notext.
+#   scheme   - http or https, for paths, hosts without a scheme and a blank list (default https)
 #   port     - the port for those (default 443 for https, 80 for http)
 #   expect   - the accepted status codes of the final answer, like "200-299" or "200,204,401" (default
 #              200-299); redirects are followed, up to MAX_REDIRECTS
@@ -63,14 +67,44 @@ ENTRY_RE = re.compile(r"^[A-Za-z0-9._~:/?#\[\]@!&'()*+,;=%-]{1,2048}$")
 CODES_RE = re.compile(r"^\s*[1-5][0-9]{2}(\s*-\s*[1-5][0-9]{2})?(\s*,\s*[1-5][0-9]{2}(\s*-\s*[1-5][0-9]{2})?)*\s*$")
 
 
-class Entry:
-    """One URL to check: where to fetch, what to call it, and the text the page must (not) contain."""
+MODES = ("verify", "self-signed", "ignore")
 
-    def __init__(self, url, name, text="", absent=False, raw=""):
-        self.url, self.name, self.text, self.absent = url, name, text, absent
-        self.id = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+
+class Entry:
+    """One URL to check: where to fetch, what to call it, the text the page must (not) contain, and
+    its own certificate check ("" = the host's). Its id is the URL's alone, so changing its options
+    keeps its sensors and their history."""
+
+    def __init__(self, url, name, text="", absent=False, mode=""):
+        self.url, self.name, self.text, self.absent, self.mode = url, name, text, absent, mode
+        self.id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
         u = urllib.parse.urlsplit(url)
         self.tls = u.scheme == "https"
+
+
+def parse_options(frag, entry):
+    """A URL's options after "#" -> (text, absent, mode), or raise ValueError. "tls=...&text=..." is
+    the form; a fragment without "=" is the older "#text" / "#!text"."""
+    if not frag:
+        return "", False, ""
+    if "=" not in frag:
+        absent = frag.startswith("!")
+        return urllib.parse.unquote(frag[1:] if absent else frag).strip(), absent, ""
+    text, absent, mode = "", False, ""
+    for part in frag.split("&"):
+        k, _, v = part.partition("=")
+        v = urllib.parse.unquote(v).strip()
+        if k == "tls":
+            if v not in MODES:
+                raise ValueError('"%s": tls must be verify, self-signed or ignore' % entry[:60])
+            mode = v
+        elif k in ("text", "notext"):
+            if not v:
+                raise ValueError('"%s": %s needs the text to look for' % (entry[:60], k))
+            text, absent = v, k == "notext"
+        elif k:
+            raise ValueError('"%s": "%s" is not an option (tls, text or notext)' % (entry[:60], k[:20]))
+    return text, absent, mode
 
 
 def display_name(u):
@@ -103,6 +137,8 @@ def parse_urls(arg, host, scheme, port):
         target, _, frag = entry.partition("#")
         if target.startswith("/"):
             target = base + target
+        elif "://" not in target:
+            target = "%s://%s" % (scheme, target)  # a host without a scheme
         u = urllib.parse.urlsplit(target)
         if u.scheme not in ("http", "https") or not u.hostname:
             raise ValueError('"%s" is not an http(s) URL or a path starting with /' % entry[:60])
@@ -112,16 +148,11 @@ def parse_urls(arg, host, scheme, port):
             u.port
         except ValueError:
             raise ValueError('"%s" has a port outside 1-65535' % entry[:60])
-        absent = frag.startswith("!")
-        text = urllib.parse.unquote(frag[1:] if absent else frag).strip()
-        key = target + ("#" + frag if frag else "")
-        if key in seen:
+        text, absent, mode = parse_options(frag, entry)
+        if target in seen:
             continue
-        seen.add(key)
-        name = display_name(u)
-        if text:
-            name += (' without "%s"' if absent else ' with "%s"') % text[:40]
-        out.append(Entry(target, name, text, absent, key))
+        seen.add(target)
+        out.append(Entry(target, display_name(u), text, absent, mode))
         if len(out) > MAX_URLS:
             raise ValueError("at most %d URLs per host" % MAX_URLS)
     return out
@@ -289,7 +320,9 @@ def certificate(u, mode, timeout):
 
 
 def fetch(entry, codes, mode, timeout):
-    """Check one URL: {id, up 1|0, status, time (None when it didn't answer), cert_days, error}."""
+    """Check one URL: {id, up 1|0, status, time (None when it didn't answer), cert_days, error}. Its
+    own certificate check, when it has one, wins over the host's mode."""
+    mode = entry.mode or mode
     out = {"id": entry.id, "up": 0, "status": None, "time": None, "cert_days": None, "error": ""}
     start = time.monotonic()
     url, conn = entry.url, None

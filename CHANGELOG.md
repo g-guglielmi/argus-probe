@@ -18,6 +18,18 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r18] - 2026-10-01
+
+### Added
+- The HTTP collector takes options per URL, after `#` like a query: `tls=verify|self-signed|ignore` (its
+  own certificate check, instead of the host's), `text=...` (text its page must contain) and
+  `notext=...` (text it must not). The older `#text` and `#!text` still read.
+- A URL can be a host without a scheme (`10.0.0.20`, `10.0.0.20:8443/admin`), which gets the host's
+  scheme.
+
+### Changed
+- A URL's id comes from the URL alone, so changing its options keeps its sensors and their history.
+
 ## [probe/v7.0.31-r17] - 2026-10-01
 
 ### Changed
