@@ -17,8 +17,12 @@ name: probe-image
 #   * Zabbix VERSION NUMBER moved      -> release probe/v<newver>-r1.
 #   * our wrapper changed (push)       -> release probe/v<samever>-r<prev+1>.
 #
-# State (digest, version, revision) lives in deploy/probe-image/.zabbix-base, bot-committed with
-# [skip ci] so it never retriggers CI. Idle days do one cheap manifest lookup.
+# State (digest, version, revision, and the source commit it was built from) lives in
+# deploy/probe-image/.zabbix-base, bot-committed with [skip ci] so it never retriggers CI. Idle days do
+# one cheap manifest lookup. The state is read from the newest main, not the run's own checkout: GitHub
+# sometimes delivers one push twice, and runs queue (concurrency below), so a duplicate - or a late run
+# for a commit a newer build already covers - sees that commit built and stops, instead of rebuilding
+# it and moving the immutable :X-rN tag.
 #
 # Moving to a new Zabbix MAJOR.MINOR (7.2, next LTS 8.0, ...) stays manual: bump the FROM tag in
 # deploy/probe-image/Dockerfile in lockstep with upgrading the Zabbix SERVER.
@@ -75,20 +79,20 @@ jobs:
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "Upstream base digest: $DIGEST"
 
+      # From the newest main, not this run's checkout: a queued run must see what the runs before it
+      # recorded (see the header).
       - name: Read last-built state
         id: last
         run: |
           set -euo pipefail
-          if [ -f "$LOCK_FILE" ]; then
-            echo "digest=$(sed -n 's/^digest=//p' "$LOCK_FILE")" >> "$GITHUB_OUTPUT"
-            echo "version=$(sed -n 's/^version=//p' "$LOCK_FILE")" >> "$GITHUB_OUTPUT"
-            REV=$(sed -n 's/^revision=//p' "$LOCK_FILE")
-            echo "revision=${REV:-0}" >> "$GITHUB_OUTPUT"
-          else
-            echo "digest=" >> "$GITHUB_OUTPUT"
-            echo "version=" >> "$GITHUB_OUTPUT"
-            echo "revision=0" >> "$GITHUB_OUTPUT"
-          fi
+          git fetch -q origin main
+          LOCK=$(git show "origin/main:$LOCK_FILE" 2>/dev/null || true)
+          field() { printf '%s\n' "$LOCK" | sed -n "s/^$1=//p"; }
+          echo "digest=$(field digest)" >> "$GITHUB_OUTPUT"
+          echo "version=$(field version)" >> "$GITHUB_OUTPUT"
+          REV=$(field revision)
+          echo "revision=${REV:-0}" >> "$GITHUB_OUTPUT"
+          echo "source=$(field source)" >> "$GITHUB_OUTPUT"
 
       - name: Decide whether to build
         id: decide
@@ -97,6 +101,16 @@ jobs:
           # A push to this workflow can only be a deploy/probe-image/** change (paths filter above).
           WRAPPER=false
           if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then WRAPPER=true; fi
+          # A push whose commit is already built (a second delivery of the same push, or an older push
+          # whose run waited behind a newer one) has nothing new to build. A manual run always builds.
+          SOURCE='${{ steps.last.outputs.source }}'
+          if [ "${{ github.event_name }}" = "push" ] && [ -n "$SOURCE" ] && git merge-base --is-ancestor "$GITHUB_SHA" "$SOURCE" 2>/dev/null; then
+            echo "Commit $GITHUB_SHA is already built (last build: $SOURCE) - nothing to do."
+            echo "wrapper=false" >> "$GITHUB_OUTPUT"
+            echo "base_moved=false" >> "$GITHUB_OUTPUT"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           BASE_MOVED=false
           if [ "${{ steps.base.outputs.digest }}" != "${{ steps.last.outputs.digest }}" ]; then BASE_MOVED=true; fi
           echo "wrapper=$WRAPPER" >> "$GITHUB_OUTPUT"
@@ -200,9 +214,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          printf 'digest=%s\nversion=%s\nrevision=%s\n' "$NEW_DIGEST" "$VER" "$REV" > "$LOCK_FILE"
+          # The source is the commit this image was built from: a later run for it (or an ancestor) skips.
+          printf 'digest=%s\nversion=%s\nrevision=%s\nsource=%s\n' "$NEW_DIGEST" "$VER" "$REV" "$GITHUB_SHA" > "$LOCK_FILE"
           git add "$LOCK_FILE"
           git commit -m "ci(probe): track Zabbix $VER-r$REV [skip ci]"
+          # main may have moved during the build (a docs commit, a commit outside the image): put the
+          # state commit on top of it, so recording the state never fails after the image was pushed.
+          git pull -q --rebase origin main
           git push origin HEAD:main
 
           if [ "$RELEASE" != "true" ]; then
@@ -226,7 +244,7 @@ jobs:
           PREV_TAG=$(git tag -l 'probe/v*' --sort=-creatordate | head -n1)
           CHANGES=""
           if [ -n "$PREV_TAG" ]; then
-            CHANGES=$(git log --no-merges --format='- %s' "${PREV_TAG}..HEAD" -- deploy/probe-image \
+            CHANGES=$(git log --no-merges --format='- %s' "${PREV_TAG}..${GITHUB_SHA}" -- deploy/probe-image \
               ':!deploy/probe-image/.zabbix-base' ':!deploy/probe-image/docker-compose.yml')
           fi
 
@@ -274,6 +292,8 @@ jobs:
             echo "Probes update from the Argus Probes page (with the argus-updater sidecar), the Unraid GUI or Dockhand; see \`deploy/README.md\`."
           } >> notes.md
 
-          git tag -a "$TAG" -m "argus-probe: Zabbix ${VER} (r${REV})"
+          # The tag marks the commit the image was built from (HEAD may also carry newer commits, after
+          # the rebase above).
+          git tag -a "$TAG" "$GITHUB_SHA" -m "argus-probe: Zabbix ${VER} (r${REV})"
           git push origin "$TAG"
           gh release create "$TAG" --title "$TITLE" --notes-file notes.md
