@@ -18,6 +18,13 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r17] - 2026-10-01
+
+### Changed
+- The HTTP collector's `self-signed` mode checks the certificate's name only when the URL uses a name.
+  A URL by IP address (a device added by its address) is accepted with the device's own certificate as
+  long as it is valid now, since such a certificate names the device's hostname and rarely its address.
+
 ## [probe/v7.0.31-r16] - 2026-10-01
 
 ### Added

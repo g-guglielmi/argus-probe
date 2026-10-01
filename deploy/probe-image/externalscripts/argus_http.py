@@ -29,8 +29,9 @@
 #              200-299); redirects are followed, up to MAX_REDIRECTS
 #   verify   - how the certificate is checked: "verify" (default) wants one a known CA issued, for the
 #              URL's name and valid now; "self-signed" also takes one no CA vouches for (a device's own,
-#              a private CA), still for the URL's name and valid now; "ignore" takes any certificate.
-#              Its expiry is reported in every mode.
+#              a private CA), still valid now and, when the URL uses a name, for that name (a URL by IP
+#              address isn't name-checked: a device's own certificate rarely lists its address);
+#              "ignore" takes any certificate. Its expiry is reported in every mode.
 #   timeout  - seconds to wait for each answer (default 10, at most 15); the whole run stays within
 #              RUN_BUDGET seconds, under the template's item timeout
 #
@@ -44,6 +45,7 @@ import time
 import errno
 import socket
 import hashlib
+import ipaddress
 import threading
 import http.client
 import urllib.parse
@@ -237,18 +239,28 @@ def connect(u, ctx, timeout):
     return conn, port
 
 
-def trusting(der):
-    """A context that trusts this one certificate as it is, and still checks its name and dates: how a
-    self-signed certificate (or one from a private CA) is verified in the "self-signed" mode."""
+def is_ip(host):
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def trusting(der, check_name):
+    """A context that trusts this one certificate as it is, and still checks its dates (and its name,
+    when asked): how a self-signed certificate (or one from a private CA) is verified in the
+    "self-signed" mode."""
     ctx = ssl.create_default_context(cadata=der)
     ctx.verify_flags |= getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)  # a leaf that isn't its own issuer
+    ctx.check_hostname = check_name
     return ctx
 
 
 def certificate(u, mode, timeout):
     """The URL's certificate: (days left or None, why it isn't accepted or "", the open connection when
     it is). An untrusted certificate is read again without checking, for its expiry; in the
-    "self-signed" mode it is then accepted if it is for the URL's name and valid now."""
+    "self-signed" mode it is then accepted if it is valid now and, for a URL by name, for that name."""
     strict, loose = contexts()
     try:
         conn, _ = connect(u, strict, timeout)
@@ -270,7 +282,7 @@ def certificate(u, mode, timeout):
     if days < 0:
         return days, "the certificate has expired", None
     try:
-        conn, _ = connect(u, trusting(der), timeout)
+        conn, _ = connect(u, trusting(der, not is_ip(u.hostname)), timeout)
         return days, "", conn
     except ssl.SSLCertVerificationError as e:
         return days, verify_reason(e), None
