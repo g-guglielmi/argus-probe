@@ -18,6 +18,12 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r20] - 2026-10-01
+
+### Changed
+- The HTTP collector reports a certificate's days left to four decimals instead of one, so Argus
+  draws the countdown as a smooth line instead of a step every 2.4 hours (it shows whole days).
+
 ## [probe/v7.0.31-r19] - 2026-10-01
 
 ### Fixed

@@ -373,13 +373,14 @@ def certificate(u, mode, timeout):
     try:
         conn, _ = connect(u, strict, timeout)
         not_after = ssl.cert_time_to_seconds(conn.sock.getpeercert()["notAfter"])
-        return round((not_after - time.time()) / 86400, 1), "", conn
+        return round((not_after - time.time()) / 86400, 4), "", conn
     except ssl.SSLCertVerificationError as e:
         reason = verify_reason(e)
     try:
         conn, _ = connect(u, loose, timeout)
         info = der_cert(conn.sock.getpeercert(binary_form=True))
-        days = round((info["not_after"] - time.time()) / 86400, 1)
+        # Four decimals (about 9 s): the countdown draws as a smooth line, not a step every 2.4 hours.
+        days = round((info["not_after"] - time.time()) / 86400, 4)
     except Exception:
         return None, reason, None
     if mode == "ignore":
