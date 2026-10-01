@@ -18,6 +18,14 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r16] - 2026-10-01
+
+### Added
+- The HTTP collector's `self-signed` certificate mode: a certificate no CA vouches for (a device's own,
+  or one from a private CA) is accepted, but it must still be for the URL's name and not expired, so a
+  wrong or expired certificate is still caught. `verify` (a known CA's certificate) and `ignore` (any
+  certificate) stay as they were; the expiry is reported in every mode.
+
 ## [probe/v7.0.31-r15] - 2026-10-01
 
 ### Added

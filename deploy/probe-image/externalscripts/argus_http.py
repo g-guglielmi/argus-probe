@@ -27,9 +27,10 @@
 #   port     - the port for those (default 443 for https, 80 for http)
 #   expect   - the accepted status codes of the final answer, like "200-299" or "200,204,401" (default
 #              200-299); redirects are followed, up to MAX_REDIRECTS
-#   verify   - "verify" (default) checks the certificate: an untrusted one, one for another name or an
-#              expired one is a failure. "ignore" accepts any certificate (a self-signed device UI)
-#              and still reports when it expires.
+#   verify   - how the certificate is checked: "verify" (default) wants one a known CA issued, for the
+#              URL's name and valid now; "self-signed" also takes one no CA vouches for (a device's own,
+#              a private CA), still for the URL's name and valid now; "ignore" takes any certificate.
+#              Its expiry is reported in every mode.
 #   timeout  - seconds to wait for each answer (default 10, at most 15); the whole run stays within
 #              RUN_BUDGET seconds, under the template's item timeout
 #
@@ -236,10 +237,18 @@ def connect(u, ctx, timeout):
     return conn, port
 
 
-def certificate(u, verify, timeout):
-    """The URL's certificate: (days left or None, why it isn't trusted or "", the open connection when
-    the check passed). With verify, an untrusted certificate is read again without checking, for its
-    expiry."""
+def trusting(der):
+    """A context that trusts this one certificate as it is, and still checks its name and dates: how a
+    self-signed certificate (or one from a private CA) is verified in the "self-signed" mode."""
+    ctx = ssl.create_default_context(cadata=der)
+    ctx.verify_flags |= getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)  # a leaf that isn't its own issuer
+    return ctx
+
+
+def certificate(u, mode, timeout):
+    """The URL's certificate: (days left or None, why it isn't accepted or "", the open connection when
+    it is). An untrusted certificate is read again without checking, for its expiry; in the
+    "self-signed" mode it is then accepted if it is for the URL's name and valid now."""
     strict, loose = contexts()
     try:
         conn, _ = connect(u, strict, timeout)
@@ -249,16 +258,25 @@ def certificate(u, verify, timeout):
         reason = verify_reason(e)
     try:
         conn, _ = connect(u, loose, timeout)
-        days = round((der_not_after(conn.sock.getpeercert(binary_form=True)) - time.time()) / 86400, 1)
-        if verify:
-            conn.close()
-            return days, reason, None
-        return days, reason, conn
+        der = conn.sock.getpeercert(binary_form=True)
+        days = round((der_not_after(der) - time.time()) / 86400, 1)
     except Exception:
         return None, reason, None
+    if mode == "ignore":
+        return days, reason, conn
+    conn.close()
+    if mode != "self-signed":
+        return days, reason, None
+    if days < 0:
+        return days, "the certificate has expired", None
+    try:
+        conn, _ = connect(u, trusting(der), timeout)
+        return days, "", conn
+    except ssl.SSLCertVerificationError as e:
+        return days, verify_reason(e), None
 
 
-def fetch(entry, codes, verify, timeout):
+def fetch(entry, codes, mode, timeout):
     """Check one URL: {id, up 1|0, status, time (None when it didn't answer), cert_days, error}."""
     out = {"id": entry.id, "up": 0, "status": None, "time": None, "cert_days": None, "error": ""}
     start = time.monotonic()
@@ -266,15 +284,17 @@ def fetch(entry, codes, verify, timeout):
     u = urllib.parse.urlsplit(url)
     try:
         if entry.tls:
-            out["cert_days"], bad, conn = certificate(u, verify, timeout)
-            if bad and verify:
+            out["cert_days"], bad, conn = certificate(u, mode, timeout)
+            if bad and mode != "ignore":
                 out["error"] = bad
                 return out
         strict, loose = contexts()
         for _ in range(MAX_REDIRECTS + 1):
             u = urllib.parse.urlsplit(url)
             if conn is None:
-                conn, _ = connect(u, strict if verify else loose, timeout)
+                # A later hop (a redirect) is checked like "verify"; "self-signed" and "ignore" take its
+                # certificate as it is (the URL's own one was checked above).
+                conn, _ = connect(u, strict if mode == "verify" else loose, timeout)
             path = (u.path or "/") + ("?" + u.query if u.query else "")
             conn.request("GET", path, headers={"Host": u.netloc, "User-Agent": USER_AGENT, "Accept": "*/*", "Connection": "close"})
             resp = conn.getresponse()
@@ -313,11 +333,11 @@ def fetch(entry, codes, verify, timeout):
             conn.close()
 
 
-def run(entries, codes, verify, timeout):
+def run(entries, codes, mode, timeout):
     results = [None] * len(entries)
 
     def one(i, e):
-        results[i] = fetch(e, codes, verify, timeout)
+        results[i] = fetch(e, codes, mode, timeout)
 
     threads = [threading.Thread(target=one, args=(i, e), daemon=True) for i, e in enumerate(entries)]
     for t in threads:
@@ -343,7 +363,13 @@ def main():
     port = {"https": 443, "http": 80}[scheme]
     if arg(4).isdigit() and 1 <= int(arg(4)) <= 65535:
         port = int(arg(4))
-    verify = arg(6).lower() not in ("ignore", "0", "no", "off", "false")
+    mode = arg(6).lower()
+    if mode in ("0", "no", "off", "false"):
+        mode = "ignore"
+    elif mode in ("self", "selfsigned", "self_signed"):
+        mode = "self-signed"
+    elif mode not in ("ignore", "self-signed"):
+        mode = "verify"
     timeout = 10.0
     if arg(7):
         try:
@@ -358,7 +384,7 @@ def main():
         out["error"] = "the URL settings are not valid: %s" % e
         print(json.dumps(out))
         return
-    out["urls"] = run(entries, codes, verify, timeout)
+    out["urls"] = run(entries, codes, mode, timeout)
     out["url_discovery"] = [{"{#URLID}": e.id, "{#URLNAME}": e.name} for e in entries]
     out["tls_discovery"] = [{"{#URLID}": e.id, "{#URLNAME}": e.name} for e in entries if e.tls]
     print(json.dumps(out))
