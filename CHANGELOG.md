@@ -18,6 +18,13 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r22] - 2026-10-02
+
+### Changed
+- The HTTP collector asks for the page even when it refuses the URL's certificate: the URL is still
+  down for the certificate, but its response time and status code keep coming, over the unchecked
+  connection, instead of stopping until the certificate is fixed.
+
 ## [probe/v7.0.31-r21] - 2026-10-02
 
 ### Changed

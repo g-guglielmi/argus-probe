@@ -40,6 +40,9 @@
 #   timeout  - seconds to wait for each answer (default 10, at most 15); the whole run stays within
 #              RUN_BUDGET seconds, under the template's item timeout
 #
+# A URL whose certificate isn't accepted is down with that reason, but its page is still asked for
+# (over the unchecked connection), so its response time and status code keep coming.
+#
 # A URL that doesn't answer as expected is a reading (up 0, with its reason), not an error. A bad URL
 # list is the one error: it is printed in "error" and every URL is left out.
 import sys
@@ -367,9 +370,10 @@ def is_ip(host):
 
 
 def certificate(u, mode, timeout):
-    """The URL's certificate: (days left or None, why it isn't accepted or "", the open connection when
-    it is). An untrusted certificate is read again without checking, for its expiry; in the
-    "self-signed" mode it is then accepted if it is valid now and, for a URL by name, for that name."""
+    """The URL's certificate: (days left or None, why it isn't accepted or "", an open connection to ask
+    for the page over, or None). An untrusted certificate is read again without checking, for its
+    expiry; in the "self-signed" mode it is then accepted if it is valid now and, for a URL by name, for
+    that name. A refused one still hands back that unchecked connection, to time the page over."""
     strict, loose = contexts()
     try:
         conn, _ = connect(u, strict, timeout)
@@ -391,31 +395,33 @@ def certificate(u, mode, timeout):
         if not bad:
             return days, "", conn
         reason = bad
-    conn.close()
-    return days, reason, None
+    return days, reason, conn
 
 
 def fetch(entry, codes, mode, timeout):
     """Check one URL: {id, up 1|0, status, time (None when it didn't answer), cert_days, error}. Its
-    own certificate check, when it has one, wins over the host's mode."""
+    own certificate check, when it has one, wins over the host's mode. A refused certificate makes it
+    down with that reason, but the page is still asked for, so its status and time are read."""
     mode = entry.mode or mode
     out = {"id": entry.id, "up": 0, "status": None, "time": None, "cert_days": None, "error": ""}
     start = time.monotonic()
     url, conn = entry.url, None
     u = urllib.parse.urlsplit(url)
+    refused = ""  # why the URL's certificate isn't accepted ("" when it is, or isn't checked)
     try:
         if entry.tls and mode != "ignore":
-            out["cert_days"], bad, conn = certificate(u, mode, timeout)
-            if bad and mode != "ignore":
-                out["error"] = bad
+            out["cert_days"], refused, conn = certificate(u, mode, timeout)
+            if refused and conn is None:  # not even an unchecked connection: nothing to time
+                out["error"] = refused
                 return out
         strict, loose = contexts()
         for _ in range(MAX_REDIRECTS + 1):
             u = urllib.parse.urlsplit(url)
             if conn is None:
                 # A later hop (a redirect) is checked like "verify"; "self-signed" and "ignore" take its
-                # certificate as it is (the URL's own one was checked above).
-                conn, _ = connect(u, strict if mode == "verify" else loose, timeout)
+                # certificate as it is (the URL's own one was checked above), and so does every hop of
+                # a URL whose own certificate was refused (it is down for that already).
+                conn, _ = connect(u, strict if mode == "verify" and not refused else loose, timeout)
             path = (u.path or "/") + ("?" + u.query if u.query else "")
             conn.request("GET", path, headers={"Host": u.netloc, "User-Agent": USER_AGENT, "Accept": "*/*", "Connection": "close"})
             resp = conn.getresponse()
@@ -433,6 +439,9 @@ def fetch(entry, codes, mode, timeout):
             body = resp.read(MAX_BODY) if entry.text else resp.read(65536)
             out["time"] = round(time.monotonic() - start, 6)
             out["status"] = status
+            if refused:
+                out["error"] = refused
+                return out
             if not any(lo <= status <= hi for lo, hi in codes):
                 out["error"] = "returned %d %s" % (status, resp.reason or http.client.responses.get(status, ""))
                 out["error"] = out["error"].strip()
@@ -447,7 +456,7 @@ def fetch(entry, codes, mode, timeout):
         out["error"] = "more than %d redirects" % MAX_REDIRECTS
         return out
     except Exception as e:
-        out["error"] = why(e, u.port or {"https": 443, "http": 80}[u.scheme], timeout)
+        out["error"] = refused or why(e, u.port or {"https": 443, "http": 80}[u.scheme], timeout)
         return out
     finally:
         if conn is not None:
