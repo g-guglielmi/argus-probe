@@ -35,7 +35,8 @@
 #              URL's name and valid now; "self-signed" also takes one no CA vouches for (a device's own,
 #              a private CA), still valid now and, when the URL uses a name, for that name (a URL by IP
 #              address isn't name-checked: a device's own certificate rarely lists its address);
-#              "ignore" takes any certificate. Its expiry is reported in every mode.
+#              "ignore" takes any certificate and doesn't read it, so that URL reports no days left
+#              (its expiry is reported in the other two modes).
 #   timeout  - seconds to wait for each answer (default 10, at most 15); the whole run stays within
 #              RUN_BUDGET seconds, under the template's item timeout
 #
@@ -403,7 +404,7 @@ def fetch(entry, codes, mode, timeout):
     url, conn = entry.url, None
     u = urllib.parse.urlsplit(url)
     try:
-        if entry.tls:
+        if entry.tls and mode != "ignore":
             out["cert_days"], bad, conn = certificate(u, mode, timeout)
             if bad and mode != "ignore":
                 out["error"] = bad
@@ -469,6 +470,12 @@ def run(entries, codes, mode, timeout):
             for e, r in zip(entries, results)]
 
 
+def tls_discovery(entries, mode):
+    """The URLs whose certificate is tracked: the https ones whose check (their own, else the host's
+    mode) isn't "ignore"."""
+    return [{"{#URLID}": e.id, "{#URLNAME}": e.name} for e in entries if e.tls and (e.mode or mode) != "ignore"]
+
+
 def main():
     if len(sys.argv) < 3:
         sys.stderr.write("usage: argus_http.py <host> <urls> [<scheme> <port> <expect> <verify> <timeout>]\n")
@@ -506,7 +513,7 @@ def main():
         return
     out["urls"] = run(entries, codes, mode, timeout)
     out["url_discovery"] = [{"{#URLID}": e.id, "{#URLNAME}": e.name} for e in entries]
-    out["tls_discovery"] = [{"{#URLID}": e.id, "{#URLNAME}": e.name} for e in entries if e.tls]
+    out["tls_discovery"] = tls_discovery(entries, mode)
     print(json.dumps(out))
 
 

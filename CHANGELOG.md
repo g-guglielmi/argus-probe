@@ -18,6 +18,13 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r21] - 2026-10-02
+
+### Changed
+- The HTTP collector's `ignore` certificate mode no longer reads the certificate: a URL set to
+  `ignore` reports no days left, so it gets no certificate sensor and no expiry alerts (the other
+  modes track the expiry as before).
+
 ## [probe/v7.0.31-r20] - 2026-10-01
 
 ### Changed
