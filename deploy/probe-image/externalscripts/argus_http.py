@@ -25,7 +25,8 @@
 #              host's own address once. Options for one URL go after "#", like a query:
 #              "#tls=self-signed&text=Welcome%20back" - tls (verify, self-signed or ignore) checks its
 #              certificate unlike the host's <verify>, text is text the page must contain
-#              (case-insensitive, %20 for a space), notext text it must not. The older "#text" and
+#              (case-insensitive, %20 for a space), notext text it must not, name is what Argus calls
+#              it ("#name=Microsoft%20365", instead of its host and path). The older "#text" and
 #              "#!text" still read as text and notext.
 #   scheme   - http or https, for paths, hosts without a scheme and a blank list (default https)
 #   port     - the port for those (default 443 for https, 80 for http)
@@ -86,15 +87,18 @@ class Entry:
         self.tls = u.scheme == "https"
 
 
+NAME_MAX = 60
+
+
 def parse_options(frag, entry):
-    """A URL's options after "#" -> (text, absent, mode), or raise ValueError. "tls=...&text=..." is
-    the form; a fragment without "=" is the older "#text" / "#!text"."""
+    """A URL's options after "#" -> (text, absent, mode, name), or raise ValueError.
+    "tls=...&text=...&name=..." is the form; a fragment without "=" is the older "#text" / "#!text"."""
     if not frag:
-        return "", False, ""
+        return "", False, "", ""
     if "=" not in frag:
         absent = frag.startswith("!")
-        return urllib.parse.unquote(frag[1:] if absent else frag).strip(), absent, ""
-    text, absent, mode = "", False, ""
+        return urllib.parse.unquote(frag[1:] if absent else frag).strip(), absent, "", ""
+    text, absent, mode, name = "", False, "", ""
     for part in frag.split("&"):
         k, _, v = part.partition("=")
         v = urllib.parse.unquote(v).strip()
@@ -106,9 +110,11 @@ def parse_options(frag, entry):
             if not v:
                 raise ValueError('"%s": %s needs the text to look for' % (entry[:60], k))
             text, absent = v, k == "notext"
+        elif k == "name":
+            name = " ".join(v.split())[:NAME_MAX]
         elif k:
-            raise ValueError('"%s": "%s" is not an option (tls, text or notext)' % (entry[:60], k[:20]))
-    return text, absent, mode
+            raise ValueError('"%s": "%s" is not an option (tls, text, notext or name)' % (entry[:60], k[:20]))
+    return text, absent, mode, name
 
 
 def display_name(u):
@@ -152,11 +158,11 @@ def parse_urls(arg, host, scheme, port):
             u.port
         except ValueError:
             raise ValueError('"%s" has a port outside 1-65535' % entry[:60])
-        text, absent, mode = parse_options(frag, entry)
+        text, absent, mode, name = parse_options(frag, entry)
         if target in seen:
             continue
         seen.add(target)
-        out.append(Entry(target, display_name(u), text, absent, mode))
+        out.append(Entry(target, name or display_name(u), text, absent, mode))
         if len(out) > MAX_URLS:
             raise ValueError("at most %d URLs per host" % MAX_URLS)
     return out

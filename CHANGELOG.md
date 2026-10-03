@@ -18,6 +18,17 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r23] - 2026-10-04
+
+### Added
+- A speed test collector (`argus_speedtest.py`) for the Speedtest add-on on a site's Probe host: it
+  measures the site's internet against Cloudflare's speed test (download and upload over several
+  connections, the idle round trip and its jitter, the round trip while each direction is busy) and
+  reports the public address, the network that owns it and the Cloudflare site it reached, or why it
+  could not measure. Standard library only.
+- The HTTP collector takes a name for a URL (`#name=Microsoft%20365`), which its sensors carry instead
+  of the host and path: the Common SaaS add-on names its services with it.
+
 ## [probe/v7.0.31-r22] - 2026-10-02
 
 ### Changed
