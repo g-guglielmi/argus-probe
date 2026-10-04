@@ -18,7 +18,14 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
-## [probe/v7.0.31-r25] - 2026-10-04
+## [probe/v7.0.31-r26] - 2026-10-04
+
+### Added
+- The speed test can run Ookla's Speedtest CLI instead of Cloudflare's test, when the probe's admin
+  chose it in Argus and accepted Ookla's terms. The image doesn't carry it: the first run downloads
+  version 1.2.0 from Ookla, checks it against its pinned checksum (the image build checks the pins
+  against Ookla's download) and keeps it in `/var/lib/zabbix/ookla` on the data volume. Its results
+  fill the same sensors, plus packet loss when the server measures it, and its errors say why.
 
 ### Fixed
 - The speed test no longer uses up Cloudflare's hourly allowance on a fast line: a run moves at most

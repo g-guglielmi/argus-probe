@@ -344,5 +344,10 @@ fi
 mkdir -p /var/lib/zabbix/ssl/ssl_ca /var/lib/zabbix/ssl/ssl_ca_internal \
          /var/lib/zabbix/ssl/certs /var/lib/zabbix/ssl/keys 2>/dev/null || true
 
+# The speed test's Ookla engine downloads Ookla's CLI here on first use (only once the probe's admin
+# accepted Ookla's terms in Argus); the external check runs as the zabbix user, so it's theirs.
+mkdir -p /var/lib/zabbix/ookla 2>/dev/null || true
+chown zabbix:zabbix /var/lib/zabbix/ookla 2>/dev/null || chown 1997:1997 /var/lib/zabbix/ookla 2>/dev/null || true
+
 echo "argus-probe: starting Zabbix proxy '$ZBX_HOSTNAME' -> $ZBX_SERVER_HOST:10051"
 exec /usr/bin/docker-entrypoint.sh "$@"

@@ -11,7 +11,8 @@
 # result is that site's internet as its probe sees it.
 #
 # Measures the connection against Cloudflare's speed test (speed.cloudflare.com, the endpoints its
-# MIT-licensed speedtest library uses) and prints one JSON object the "Argus Speedtest" template reads:
+# MIT-licensed speedtest library uses), or with the ookla engine runs Ookla's Speedtest CLI, and prints
+# one JSON object the "Argus Speedtest" template reads:
 #   down_bps, up_bps        - download and upload throughput, bits per second, over several streams
 #   latency_ms, jitter_ms   - idle round trip (median) and its jitter (mean change between samples)
 #   loaded_down_ms,
@@ -19,6 +20,8 @@
 #   ip, colo                - the public address and the Cloudflare site reached (its /cdn-cgi/trace)
 #   isp                     - the network that announces the address (RIPEstat's public data API)
 #   city                    - kept for older templates, always ""
+#   loss_pct                - packet loss, percent (Ookla only, when its server measures it)
+#   engine                  - which test ran: cloudflare or ookla
 #   error                   - why it could not measure ("" when it did); the numbers measured so far
 #                             are still printed
 # It asks for what Cloudflare serves any client, with no headers posing as its own page, and a run moves
@@ -30,20 +33,35 @@
 # with why, since the streams left would read low. Stdlib only. A run takes at most about
 # 2 x (<seconds> + 1) + 5 seconds.
 #
+# Ookla's CLI is Ookla's own program, under its own terms (personal, non-commercial use): Argus doesn't
+# ship it. The ookla engine is set only once the probe's admin accepted those terms in Argus; then the
+# first run downloads it from Ookla (OOKLA_VERSION, checked against OOKLA_SHA256) into OOKLA_DIR on the
+# probe's data volume and runs it with Ookla's terms accepted. Ookla picks its servers and connections.
+#
 # Usage (as Zabbix runs it):
-#   argus_speedtest.py [<seconds> [<streams>]]
+#   argus_speedtest.py [<seconds> [<streams> [<engine> [<server>]]]]
 #   seconds - the longest each direction is measured, on a line too slow to move its share sooner
-#             (default 8, 3..15)
-#   streams - parallel connections per direction (default 8, 1..16)
+#             (default 8, 3..15; Cloudflare only)
+#   streams - parallel connections per direction (default 8, 1..16; Cloudflare only)
+#   engine  - cloudflare (default) or ookla
+#   server  - an Ookla server ID to test against (blank = the one Ookla picks)
+import io
+import os
+import re
 import sys
 import json
 import time
 import socket
 import select
 import ssl
+import tarfile
+import hashlib
+import platform
 import threading
 import statistics
+import subprocess
 import http.client
+import urllib.request
 
 HOST = "speed.cloudflare.com"
 USER_AGENT = "Argus speedtest"
@@ -59,6 +77,20 @@ MIN_WINDOW = 0.2  # seconds: a shorter measured span counts from the start inste
 SOCK_TIMEOUT = 10
 LATENCY_SAMPLES = 12
 LOADED_EVERY = 0.25  # seconds between round trips while a direction is busy
+# Ookla's CLI, as the probe downloads it from Ookla. SHA-256 of Ookla's own archives by processor
+# (nixpkgs pins the same; the probe image build checks them against Ookla's download before a release).
+OOKLA_VERSION = "1.2.0"
+OOKLA_URL = "https://install.speedtest.net/app/cli/ookla-speedtest-%s-linux-%s.tgz"
+OOKLA_SHA256 = {
+    "x86_64": "5690596c54ff9bed63fa3732f818a05dbc2db19ad36ed68f21ca5f64d5cfeeb7",
+    "aarch64": "3953d231da3783e2bf8904b6dd72767c5c6e533e163d3742fd0437affa431bd3",
+    "armhf": "e45fcdebbd8a185553535533dd032d6b10bc8c64eee4139b1147b9c09835d08d",
+    "i386": "9ff7e18dbae7ee0e03c66108445a2fb6ceea6c86f66482e1392f55881b772fe8",
+}
+OOKLA_ARCH = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64",
+              "armv7l": "armhf", "armv6l": "armhf", "i686": "i386", "i386": "i386"}
+OOKLA_DIR = "/var/lib/zabbix/ookla"  # the probe's data volume: downloaded once, kept across updates
+OOKLA_TIMEOUT = 50  # seconds a run may take (the template gives the item 60)
 # The Server-Timing entries that are Cloudflare's own time on a request (its edge and the speed test
 # worker; older answers carry one cfRequestDuration), left out of a round trip.
 SERVER_TIMES = ("cfSpeedEdge", "cfSpeedWorker", "cfRequestDuration")
@@ -357,6 +389,118 @@ def run_phase(target, seconds, streams, budget):
     return ph.bps(), loaded, ""
 
 
+class OoklaError(Exception):
+    """Ookla's test could not run, said in words."""
+
+
+def ookla_binary(directory=OOKLA_DIR):
+    """Ookla's CLI on this probe, downloaded from Ookla and checked on first use."""
+    machine = platform.machine()
+    arch = OOKLA_ARCH.get(machine.lower())
+    if not arch:
+        raise OoklaError("Ookla's CLI has no build for this probe's processor (%s)" % machine)
+    path = os.path.join(directory, "speedtest-%s-%s" % (OOKLA_VERSION, arch))
+    if os.access(path, os.X_OK):
+        return path
+    try:
+        req = urllib.request.Request(OOKLA_URL % (OOKLA_VERSION, arch), headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=SOCK_TIMEOUT, context=ssl.create_default_context()) as resp:
+            data = resp.read(20_000_000)
+    except Exception as e:
+        reason = getattr(e, "reason", e)
+        if isinstance(reason, socket.gaierror):
+            reason = "install.speedtest.net does not resolve (no DNS or no internet)"
+        elif not isinstance(reason, str):
+            reason = why(reason)
+        raise OoklaError("could not download Ookla's CLI from install.speedtest.net: %s" % reason)
+    if hashlib.sha256(data).hexdigest() != OOKLA_SHA256[arch]:
+        raise OoklaError("Ookla's CLI as downloaded didn't match its checksum, so it wasn't installed")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+            exe = tf.extractfile("speedtest").read()
+        os.makedirs(directory, exist_ok=True)
+        tmp = "%s.%d" % (path, os.getpid())
+        with open(tmp, "wb") as f:
+            f.write(exe)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, path)
+    except (KeyError, AttributeError, tarfile.TarError):
+        raise OoklaError("Ookla's CLI archive has no speedtest program in it")
+    except OSError as e:
+        raise OoklaError("could not install Ookla's CLI in %s: %s" % (directory, (e.strerror or str(e)).lower()))
+    return path
+
+
+def ookla_parse(stdout, stderr, code):
+    """Ookla's result object from its JSON lines, or why there is none."""
+    result, errors = None, []
+    for line in (stdout + "\n" + stderr).splitlines():
+        line = line.strip()
+        if line.startswith("[error]"):
+            errors.append(line[len("[error]"):].strip())
+            continue
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if d.get("type") == "result":
+            result = d
+        elif d.get("type") == "log" and d.get("level") == "error" and d.get("message"):
+            errors.append(str(d["message"]).strip())
+    if result is None:
+        raise OoklaError("Ookla's test failed: %s" % (errors[0] if errors else "it ended (code %d) with no result" % code))
+    return result
+
+
+def ookla_run(server):
+    exe = ookla_binary()
+    cmd = [exe, "--accept-license", "--accept-gdpr", "--format=json", "--progress=no"]
+    if server:
+        cmd.append("--server-id=%s" % server)
+    # Its settings (the terms accepted) live beside it, not in a home the proxy's user may not have.
+    env = {"HOME": os.path.dirname(exe), "PATH": "/usr/bin:/bin"}
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=OOKLA_TIMEOUT, env=env)
+    except subprocess.TimeoutExpired:
+        raise OoklaError("Ookla's test didn't finish in %d seconds" % OOKLA_TIMEOUT)
+    except OSError as e:
+        raise OoklaError("could not run Ookla's CLI: %s" % (e.strerror or str(e)).lower())
+    return ookla_parse(p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace"), p.returncode)
+
+
+def ookla_fill(out, r):
+    """Ookla's result in this collector's terms: bandwidth is bytes a second, round trips in ms."""
+    def num(*path):
+        v = r
+        for k in path:
+            v = v.get(k) if isinstance(v, dict) else None
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    def r2(v):
+        return round(v, 2) if v is not None else None
+
+    down, up = num("download", "bandwidth"), num("upload", "bandwidth")
+    out["down_bps"] = round(down * 8) if down is not None else None
+    out["up_bps"] = round(up * 8) if up is not None else None
+    out["latency_ms"], out["jitter_ms"] = r2(num("ping", "latency")), r2(num("ping", "jitter"))
+    out["loaded_down_ms"], out["loaded_up_ms"] = r2(num("download", "latency", "iqm")), r2(num("upload", "latency", "iqm"))
+    out["loss_pct"] = r2(num("packetLoss"))
+    iface, srv = r.get("interface") or {}, r.get("server") or {}
+    out["ip"] = str(iface.get("externalIp") or "")
+    out["isp"] = str(r.get("isp") or "")
+    site = ", ".join(str(x) for x in (srv.get("name"), srv.get("location")) if x)
+    out["colo"] = site + (" (server %s)" % srv["id"] if srv.get("id") else "")
+    missing = [w for w, v in (("download", down), ("upload", up)) if v is None]
+    if missing:
+        out["error"] = "Ookla's test reported no %s speed" % " or ".join(missing)
+
+
+def arg_str(i):
+    return sys.argv[i].strip() if len(sys.argv) > i else ""
+
+
 def arg_int(i, default, lo, hi):
     try:
         v = int(sys.argv[i]) if len(sys.argv) > i and sys.argv[i].strip() != "" else default
@@ -368,8 +512,20 @@ def arg_int(i, default, lo, hi):
 def main():
     seconds = arg_int(1, 8, 3, 15)
     streams = arg_int(2, 8, 1, 16)
+    engine = "ookla" if arg_str(3).lower() == "ookla" else "cloudflare"
+    server = arg_str(4) if re.fullmatch(r"[0-9]{1,9}", arg_str(4)) else ""
     out = {"down_bps": None, "up_bps": None, "latency_ms": None, "jitter_ms": None, "loaded_down_ms": None,
-           "loaded_up_ms": None, "ip": "", "isp": "", "colo": "", "city": "", "error": ""}
+           "loaded_up_ms": None, "ip": "", "isp": "", "colo": "", "city": "", "loss_pct": None,
+           "engine": engine, "error": ""}
+    if engine == "ookla":
+        try:
+            ookla_fill(out, ookla_run(server))
+        except OoklaError as e:
+            out["error"] = str(e)
+        except Exception as e:  # anything unforeseen still says why
+            out["error"] = "Ookla's test failed: %s" % (str(e) or e.__class__.__name__)
+        print(json.dumps(out))
+        return
     try:
         meta(out)
     except Exception:

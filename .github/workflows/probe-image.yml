@@ -176,6 +176,23 @@ jobs:
 
           echo "Planned: version=$VER revision=$REV release=$RELEASE reason=$REASON"
 
+      # The speed test's Ookla engine downloads Ookla's CLI on the probe and checks it against the
+      # checksums argus_speedtest.py pins: confirm they still match Ookla's download before a release.
+      - name: Check the Ookla CLI checksums
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          python3 - <<'EOF'
+          import hashlib, importlib.util, urllib.request
+          spec = importlib.util.spec_from_file_location("st", "deploy/probe-image/externalscripts/argus_speedtest.py")
+          st = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(st)
+          for arch, want in sorted(st.OOKLA_SHA256.items()):
+              url = st.OOKLA_URL % (st.OOKLA_VERSION, arch)
+              got = hashlib.sha256(urllib.request.urlopen(url, timeout=60).read()).hexdigest()
+              print(arch, "ok" if got == want else "MISMATCH " + got)
+              assert got == want, url
+          EOF
+
       - name: Build & push argus-probe
         if: steps.decide.outputs.build == 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
