@@ -21,16 +21,19 @@
 #   city                    - kept for older templates, always ""
 #   error                   - why it could not measure ("" when it did); the numbers measured so far
 #                             are still printed
-# It asks for what Cloudflare serves any client, with no headers posing as its own page: downloads of
-# at most DOWN_BYTES a request (it refuses 100 MB), one after another on each stream, and one upload of
-# up to UP_BYTES a stream (it refuses 1 GB), cut at the deadline. A direction any of whose streams was
-# refused (HTTP 429 when Cloudflare finds the address too busy) reports no speed, with why: the streams
-# left would read low. Stdlib only. A run takes about 2 x (<seconds> + 1) + 5 seconds and moves, on a
-# gigabit line, about <seconds> x 125 MB each way: schedule it accordingly.
+# It asks for what Cloudflare serves any client, with no headers posing as its own page, and a run moves
+# at most about what one test on that page moves on a fast line: DOWN_BUDGET down and UP_BUDGET up, shared
+# among the streams (downloads of at most DOWN_REQUEST a request: it refuses 100 MB), so a fast line is
+# measured on a bounded amount of data and a slower one stops at the deadline. The rate is read from the
+# warm-up to the first stream done, while all of them fill the line. Cloudflare still limits how much one
+# address tests in an hour: a direction any of whose streams was refused (HTTP 429) reports no speed,
+# with why, since the streams left would read low. Stdlib only. A run takes at most about
+# 2 x (<seconds> + 1) + 5 seconds.
 #
 # Usage (as Zabbix runs it):
 #   argus_speedtest.py [<seconds> [<streams>]]
-#   seconds - how long each direction is measured (default 8, 3..15)
+#   seconds - the longest each direction is measured, on a line too slow to move its share sooner
+#             (default 8, 3..15)
 #   streams - parallel connections per direction (default 8, 1..16)
 import sys
 import json
@@ -44,12 +47,18 @@ import http.client
 
 HOST = "speed.cloudflare.com"
 USER_AGENT = "Argus speedtest"
-DOWN_BYTES = 50_000_000  # a download request (Cloudflare refuses 100 MB without its own page's headers)
-UP_BYTES = 500_000_000  # one upload request per stream (Cloudflare refuses 1 GB: 413)
-WARMUP = 1.0  # seconds of each phase left out (TCP slow start)
+# What a run moves at most, all streams together: no more than one test on Cloudflare's own page moves
+# on a fast line (its library's steps add up to about 970 MB down and 300 MB up), so a fast line doesn't
+# use up the address's hourly allowance in one run.
+DOWN_BUDGET = 720_000_000
+UP_BUDGET = 300_000_000  # one request a stream (Cloudflare refuses 1 GB: 413)
+DOWN_REQUEST = 90_000_000  # the most a download request asks for (100 MB is refused without its page's headers)
+WARMUP = 1.0  # seconds of each phase left out (TCP slow start) ...
+WARM_SHARE = 0.25  # ... or until a quarter of its data moved, when a fast line gets there sooner
+MIN_WINDOW = 0.2  # seconds: a shorter measured span counts from the start instead
 SOCK_TIMEOUT = 10
 LATENCY_SAMPLES = 12
-LOADED_EVERY = 1.0  # seconds between round trips while a direction is busy
+LOADED_EVERY = 0.25  # seconds between round trips while a direction is busy
 # The Server-Timing entries that are Cloudflare's own time on a request (its edge and the speed test
 # worker; older answers carry one cfRequestDuration), left out of a round trip.
 SERVER_TIMES = ("cfSpeedEdge", "cfSpeedWorker", "cfRequestDuration")
@@ -66,7 +75,8 @@ class Refused(Exception):
         if self.status == 429:
             wait = ""
             try:
-                wait = ", for about %d minutes" % max(1, round(int(self.retry_after) / 60))
+                mins = max(1, round(int(self.retry_after) / 60))
+                wait = ", for about a minute" if mins == 1 else ", for about %d minutes" % mins
             except (TypeError, ValueError):
                 pass
             return ("Cloudflare limits how much one address tests in an hour and refuses more%s (HTTP 429); "
@@ -195,35 +205,48 @@ def latency(out):
 
 
 class Phase:
-    """One direction: streams moving data until the deadline, a side connection timing round trips,
-    and the bytes counted after the warm-up."""
+    """One direction: streams each moving their share of the budget until it's moved or the deadline,
+    a side connection timing round trips while they're all busy, and the rate from the warm-up to the
+    first stream done (after it, fewer streams are left to fill the line)."""
 
-    def __init__(self, seconds):
+    def __init__(self, seconds, budget):
         self.lock = threading.Lock()
         self.bytes = 0
         self.start = time.perf_counter()
         self.warm = self.start + WARMUP
+        self.warm_bytes = budget * WARM_SHARE
         self.deadline = self.warm + seconds
-        self.at_warm = None
+        self.at_warm = None  # (bytes, time) when the warm-up ended
+        self.at_done = None  # (bytes, time) when the first stream moved its share
+        self.over = threading.Event()  # the line is no longer full: stop timing round trips
         self.loaded = []
         self.errors = []
 
     def add(self, n):
         now = time.perf_counter()
         with self.lock:
-            if self.at_warm is None and now >= self.warm:
+            if self.at_warm is None and (now >= self.warm or self.bytes >= self.warm_bytes):
                 self.at_warm = (self.bytes, now)
             self.bytes += n
 
-    def bps(self):
-        end = time.perf_counter()
+    def done(self):
+        now = time.perf_counter()
         with self.lock:
-            if self.at_warm is None:
+            if self.at_done is None:
+                self.at_done = (self.bytes, now)
+        self.over.set()
+
+    def bps(self):
+        end = min(time.perf_counter(), self.deadline)
+        with self.lock:
+            if not self.bytes:
                 return None
-            b0, t0 = self.at_warm
-            moved = self.bytes - b0
-        span = min(end, self.deadline) - t0
-        return moved * 8 / span if span > 0 else None
+            b0, t0 = self.at_warm or (0, self.start)
+            b1, t1 = self.at_done or (self.bytes, end)
+        if t1 - t0 < MIN_WINDOW:  # a stream finished within the warm-up: count from the start
+            b0, t0 = 0, self.start
+        span = t1 - t0
+        return (b1 - b0) * 8 / span if span > 0 else None
 
     def fail(self, e):
         with self.lock:
@@ -233,23 +256,23 @@ class Phase:
         try:
             conn = connect()
             ping(conn)
-            while time.perf_counter() < self.deadline:
-                time.sleep(LOADED_EVERY)
-                if self.warm <= time.perf_counter() < self.deadline:
+            while not self.over.wait(LOADED_EVERY):
+                if self.at_warm is not None:
                     self.loaded.append(ping(conn))
             conn.close()
         except Exception:  # a lost side measurement isn't a failed test
             pass
 
 
-def download_stream(ph):
+def download_stream(ph, share):
     buf = bytearray(256 * 1024)
     view = memoryview(buf)
     conn = None
     try:
         conn = connect()
-        while time.perf_counter() < ph.deadline:
-            conn.request("GET", "/__down?bytes=%d" % DOWN_BYTES, headers=headers())
+        left = share
+        while left > 0 and time.perf_counter() < ph.deadline:
+            conn.request("GET", "/__down?bytes=%d" % min(left, DOWN_REQUEST), headers=headers())
             resp = conn.getresponse()
             if resp.status != 200:
                 raise refused(resp)
@@ -258,6 +281,9 @@ def download_stream(ph):
                 if not n:
                     break
                 ph.add(n)
+                left -= n
+        if left <= 0:
+            ph.done()
     except Exception as e:
         ph.fail(e)
     finally:
@@ -278,33 +304,33 @@ def early_answer(sock):
     return Refused(0, "an unexpected answer")
 
 
-def upload_stream(ph):
+def upload_stream(ph, share):
     piece = b"0" * (64 * 1024)
     conn = None
     try:
         conn = connect()
-        while time.perf_counter() < ph.deadline:
-            conn.putrequest("POST", "/__up")
-            for k, v in headers({"Content-Type": "application/octet-stream", "Content-Length": str(UP_BYTES)}).items():
-                conn.putheader(k, v)
-            conn.endheaders()
-            sent, n = 0, 0
-            while sent < UP_BYTES and time.perf_counter() < ph.deadline:
-                k = min(len(piece), UP_BYTES - sent)
-                conn.send(piece[:k])
-                sent += k
-                ph.add(k)
-                n += 1
-                if n % 32 == 0:  # every 2 MB: a refusal arrives as an early answer
-                    refused = early_answer(conn.sock)
-                    if refused:
-                        raise refused
-            if sent < UP_BYTES:
-                break  # cut at the deadline: the connection is dropped below
-            resp = conn.getresponse()
-            resp.read()
-            if resp.status != 200:
-                raise refused(resp)
+        conn.putrequest("POST", "/__up")
+        for k, v in headers({"Content-Type": "application/octet-stream", "Content-Length": str(share)}).items():
+            conn.putheader(k, v)
+        conn.endheaders()
+        sent, n = 0, 0
+        while sent < share:
+            if time.perf_counter() >= ph.deadline:
+                return  # cut at the deadline: the connection is dropped below
+            k = min(len(piece), share - sent)
+            conn.send(piece[:k])
+            sent += k
+            ph.add(k)
+            n += 1
+            if n % 32 == 0:  # every 2 MB: a refusal arrives as an early answer
+                refused = early_answer(conn.sock)
+                if refused:
+                    raise refused
+        resp = conn.getresponse()
+        resp.read()
+        if resp.status != 200:
+            raise refused(resp)
+        ph.done()  # Cloudflare answers once it has the whole upload
     except Exception as e:
         ph.fail(e)
     finally:
@@ -312,14 +338,16 @@ def upload_stream(ph):
             conn.close()
 
 
-def run_phase(target, seconds, streams):
-    ph = Phase(seconds)
-    threads = [threading.Thread(target=target, args=(ph,), daemon=True) for _ in range(streams)]
-    threads.append(threading.Thread(target=ph.pinger, daemon=True))
-    for t in threads:
+def run_phase(target, seconds, streams, budget):
+    ph = Phase(seconds, budget)
+    threads = [threading.Thread(target=target, args=(ph, budget // streams), daemon=True) for _ in range(streams)]
+    pinger = threading.Thread(target=ph.pinger, daemon=True)
+    for t in threads + [pinger]:
         t.start()
     for t in threads:
         t.join(timeout=seconds + WARMUP + SOCK_TIMEOUT + 2)
+    ph.over.set()
+    pinger.join(timeout=SOCK_TIMEOUT)
     loaded = round(statistics.median(ph.loaded), 2) if ph.loaded else None
     if ph.errors:
         # A stream that failed leaves the others to read low: no speed, but why.
@@ -352,12 +380,12 @@ def main():
         out["error"] = "could not reach %s: %s" % (HOST, why(e))
         print(json.dumps(out))
         return
-    down, out["loaded_down_ms"], err = run_phase(download_stream, seconds, streams)
+    down, out["loaded_down_ms"], err = run_phase(download_stream, seconds, streams, DOWN_BUDGET)
     if down is not None:
         out["down_bps"] = round(down)
     elif err:
         out["error"] = "the download: " + err
-    up, out["loaded_up_ms"], err = run_phase(upload_stream, seconds, streams)
+    up, out["loaded_up_ms"], err = run_phase(upload_stream, seconds, streams, UP_BUDGET)
     if up is not None:
         out["up_bps"] = round(up)
     elif err and not out["error"]:

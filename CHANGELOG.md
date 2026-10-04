@@ -18,6 +18,15 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r25] - 2026-10-04
+
+### Fixed
+- The speed test no longer uses up Cloudflare's hourly allowance on a fast line: a run moves at most
+  about 720 MB down and 300 MB up, shared among its connections, no more than one test on
+  Cloudflare's own page. A fast line is measured on that data, from the warm-up to the first connection
+  done; a slower one stops after the seconds set, as before. The round trip while busy is timed more
+  often, so a short run still has enough samples.
+
 ## [probe/v7.0.31-r24] - 2026-10-04
 
 ### Fixed
