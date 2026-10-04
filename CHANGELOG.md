@@ -18,6 +18,17 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r24] - 2026-10-04
+
+### Fixed
+- The speed test uses the whole line: 8 connections by default (up to 16), each one long request for
+  the run instead of a new one every second, so a 2.5 Gbps line reads as such.
+- It asks Cloudflare only for what it serves any client, with no headers posing as its own page: the
+  public address and Cloudflare site come from /cdn-cgi/trace, the provider from RIPEstat.
+- A refused connection is no longer a lower speed: that direction reports no speed and why. Cloudflare
+  limits how much one address tests in an hour; its HTTP 429 now says so, with how long it asks to
+  wait.
+
 ## [probe/v7.0.31-r23] - 2026-10-04
 
 ### Added
