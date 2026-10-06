@@ -285,15 +285,26 @@ class Phase:
             self.errors.append(why(e))
 
     def pinger(self):
-        try:
-            conn = connect()
-            ping(conn)
-            while not self.over.wait(LOADED_EVERY):
+        """Times round trips on a side connection while the phase runs. A round trip that fails (a
+        refusal, or the connection reset under the load) is skipped and the connection opened again
+        for the next, so one hiccup doesn't cost the phase all its samples."""
+        conn = None
+        wait = 0  # the first connection opens at once
+        while not self.over.wait(wait):
+            wait = LOADED_EVERY
+            try:
+                if conn is None:
+                    conn = connect()
+                    ping(conn)  # the first round trip pays for TCP and TLS: not a sample
+                    continue
                 if self.at_warm is not None:
                     self.loaded.append(ping(conn))
+            except Exception:  # a lost sample isn't a failed test
+                if conn is not None:
+                    conn.close()
+                conn = None
+        if conn is not None:
             conn.close()
-        except Exception:  # a lost side measurement isn't a failed test
-            pass
 
 
 def download_stream(ph, share):

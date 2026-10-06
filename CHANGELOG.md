@@ -18,6 +18,13 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r27] - 2026-10-06
+
+### Fixed
+- The speed test keeps timing the round trip while the line is busy when one of those round trips
+  fails (refused, or its connection reset under the load): it skips that one and reconnects for the
+  next, where it used to stop, so a run could report no latency while downloading or uploading.
+
 ## [probe/v7.0.31-r26] - 2026-10-04
 
 ### Added
