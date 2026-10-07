@@ -18,6 +18,16 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r28] - 2026-10-08
+
+### Added
+- The XCP-NG collector lists, every poll and whatever VM monitoring is set to, each VM's network
+  cards (MAC addresses), its IPv4 addresses when the guest tools report them, and the hypervisor it
+  runs on. Argus (core, with this release) places the hosts that are those VMs under their
+  hypervisor: on the site's map, on the Device tab's path, and for alerts, so a hypervisor that goes
+  down holds its VMs' alerts and names them in its own. The two extra XAPI calls never fail a poll;
+  a pool that refuses them just lists nothing. Each hypervisor entry also carries its address.
+
 ## [probe/v7.0.31-r27] - 2026-10-06
 
 ### Fixed

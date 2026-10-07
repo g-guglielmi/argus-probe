@@ -13,6 +13,9 @@
 # Speaks XAPI (XML-RPC over HTTPS) to the pool master and prints everything the "Argus XCP-NG by
 # XAPI" template reads as ONE JSON object: pool state, every hypervisor in the pool (CPU/memory/
 # uptime/version, optional temperature), and - opt-in via the vmmode argument - the resident VMs.
+# Every poll also lists each VM's network cards (MACs) and, with guest tools, its IPv4 addresses, with
+# the hypervisor it runs on (vm_nics, whatever vmmode says): Argus places the hosts that are those VMs
+# under their hypervisor (upstream devices). Read with best effort: a refused call leaves it empty.
 # Host and per-VM CPU/IO rates come from each hypervisor's rrd_updates feed (XAPI dropped the
 # host_cpus utilisation fields long ago; the RRDs are the canonical live source). Temperature is
 # read through the OPTIONAL "argus-temp" XAPI plugin on dom0 (docs/hosts/xcpng-temp) - hosts
@@ -66,6 +69,7 @@ OUT = {
     "hosts": [],
     "vms": [],
     "vms_perf": [],
+    "vm_nics": [],
     "tls_error": "",
     "error": "",
 }
@@ -257,6 +261,47 @@ def rrd_sum(rrds, prefix, pattern):
     return total if found else None
 
 
+GUEST_IPV4 = re.compile(r"^\d+/(ip|ipv4/\d+)$")
+
+
+def guest_ips(gm):
+    """A VM's IPv4 addresses as its guest tools report them (VM_guest_metrics.networks: "0/ip",
+    "0/ipv4/0", ...), sorted and without repeats; none without guest tools."""
+    nets = (gm or {}).get("networks") or {}
+    return sorted({str(v).strip() for k, v in nets.items() if GUEST_IPV4.match(str(k)) and str(v).strip()})
+
+
+def vm_nics(vms, hosts, vifs, gmetrics):
+    """Each VM's network cards and addresses, with the hypervisor it runs on: where it is resident,
+    else where it prefers to run (its affinity), else the pool's only member. Every VM counts here,
+    ignored ones too (this places hosts, it monitors nothing); templates, snapshots and control
+    domains don't. A VM with no MAC and no address can't be matched to anything and is left out."""
+    macs = {}
+    for vif in (vifs or {}).values():
+        m = str(vif.get("MAC") or "").strip().lower()
+        if m:
+            macs.setdefault(vif.get("VM", ""), set()).add(m)
+    only = next(iter(hosts.values())) if len(hosts) == 1 else None
+    out = []
+    for ref, vm in vms.items():
+        if vm.get("is_a_template") or vm.get("is_a_snapshot") or vm.get("is_control_domain"):
+            continue
+        host = hosts.get(vm.get("resident_on", "")) or hosts.get(vm.get("affinity", "")) or only
+        if not host:
+            continue
+        entry = {
+            "name": vm.get("name_label", ""),
+            "uuid": vm.get("uuid", ""),
+            "host": host.get("name_label", ""),
+            "macs": sorted(macs.get(ref, ())),
+            "ips": guest_ips((gmetrics or {}).get(vm.get("guest_metrics", ""))),
+        }
+        if entry["macs"] or entry["ips"]:
+            out.append(entry)
+    out.sort(key=lambda e: (e["name"], e["uuid"]))
+    return out
+
+
 def scrub_cmdline(title):
     """Zero this process's command line (what ps, top, docker top and /proc/<pid>/cmdline show)
     once the arguments have been read, leaving only the script name. Zabbix can hand a secret to an
@@ -317,6 +362,15 @@ def main():
         hmetrics = call(proxy.host_metrics.get_all_records, sid)
         vms = call(proxy.VM.get_all_records, sid)
         vmetrics = call(proxy.VM_metrics.get_all_records, sid)
+        # The VMs' network cards and guest addresses (vm_nics): best effort, never failing the poll.
+        try:
+            vifs = call(proxy.VIF.get_all_records, sid)
+        except Exception:
+            vifs = {}
+        try:
+            gmetrics = call(proxy.VM_guest_metrics.get_all_records, sid)
+        except Exception:
+            gmetrics = {}
     except Exception as e:
         try:
             proxy.session.logout(sid)
@@ -393,6 +447,7 @@ def main():
         entry = {
             "uuid": h.get("uuid", ""),
             "name": h.get("name_label", ""),
+            "address": h.get("address", ""),
             "live": live,
             "enabled": 1 if h.get("enabled") else 0,
             "cpus": int((h.get("cpu_info") or {}).get("cpu_count", 0) or 0),
@@ -424,6 +479,8 @@ def main():
         "hosts_total": len(hosts),
         "hosts_live": live_count,
     }
+
+    OUT["vm_nics"] = vm_nics(vms, hosts, vifs, gmetrics)
 
     if vmmode in ("state", "full"):
         out_vms = []
