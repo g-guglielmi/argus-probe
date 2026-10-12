@@ -37,6 +37,9 @@ LABEL org.opencontainers.image.source="https://github.com/g-guglielmi/argus-prob
 
 COPY entrypoint.sh /usr/local/bin/argus-entrypoint.sh
 RUN chmod +x /usr/local/bin/argus-entrypoint.sh
+# The minute check-in's report, sourced by the entrypoint (and tested on its own in CI).
+COPY checkin.sh /usr/local/lib/argus/checkin.sh
+RUN chmod 0644 /usr/local/lib/argus/checkin.sh
 
 # Argus external-check collectors for agentless device classes (NUT UPS, DNS resolution, XCP-NG,
 # Linux over SSH) plus the discovery runners (subnet scanner, UniFi sweep). Zabbix runs the

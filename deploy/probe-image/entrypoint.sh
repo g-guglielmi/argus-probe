@@ -68,29 +68,8 @@ for _n in $PROC_NAMES; do
   if [ -n "$_v" ]; then PROCS_PINNED="$PROCS_PINNED $_n"; fi
 done
 
-# --- CPU report (for the autoscaler) ---
-# Argus raises a process count only while more processes can help: a machine whose load average stays
-# at its CPU count is short on CPU, and more forks only queue for it. Every check-in reports the CPUs
-# this container sees, a container CPU limit (cgroup v2 cpu.max or v1 cfs quota; 0 = none) and the
-# load average. Inside a container the load average is the whole host's.
-CGROUP_ROOT=/sys/fs/cgroup
-valid_num() { case "$1" in ''|*[!0-9.]*|*.*.*|.*) return 1;; esac; }
-cpu_json() {
-  _cpus=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 0)
-  valid_num "$_cpus" || _cpus=0
-  _quota=0
-  if [ -r "$CGROUP_ROOT/cpu.max" ]; then
-    _quota=$(awk '$1 != "max" && $2 > 0 { printf "%.2f", $1 / $2 }' "$CGROUP_ROOT/cpu.max" 2>/dev/null || true)
-  elif [ -r "$CGROUP_ROOT/cpu/cpu.cfs_quota_us" ] && [ -r "$CGROUP_ROOT/cpu/cpu.cfs_period_us" ]; then
-    _quota=$(awk 'NR == FNR { q = $1; next } q > 0 && $1 > 0 { printf "%.2f", q / $1 }' \
-      "$CGROUP_ROOT/cpu/cpu.cfs_quota_us" "$CGROUP_ROOT/cpu/cpu.cfs_period_us" 2>/dev/null || true)
-  fi
-  valid_num "$_quota" || _quota=0
-  _l1=0; _l5=0; _l15=0
-  if [ -r /proc/loadavg ]; then read -r _l1 _l5 _l15 _rest < /proc/loadavg || true; fi
-  valid_num "$_l1" || _l1=0; valid_num "$_l5" || _l5=0; valid_num "$_l15" || _l15=0
-  printf '{"count":%s,"quota":%s,"load":[%s,%s,%s]}' "$_cpus" "$_quota" "$_l1" "$_l5" "$_l15"
-}
+# The minute check-in's report (version, capabilities, process counts, CPU): see checkin.sh.
+. /usr/local/lib/argus/checkin.sh
 
 # drop VAR LABEL - clear a value that failed its check, saying so.
 drop() { echo "argus-probe: ignoring an unexpected $2 value from Argus" >&2; eval "$1=''"; }
@@ -257,7 +236,6 @@ for _n in $PROC_NAMES; do
     PROCS_JSON=$(printf '%s' "$PROCS_JSON" | jq -c --arg n "$_n" --argjson v "$_v" '. + {($n): $v}')
   fi
 done
-PROCS_PINNED_JSON=$(printf '%s' "$PROCS_PINNED" | jq -Rc 'split(" ") | map(select(length > 0))')
 echo "argus-probe: Zabbix processes: $(printf '%s' "$PROCS_JSON" | jq -r 'to_entries | map("\(.key)=\(.value)") | join(" ")')${PROCS_PINNED:+ (set on the container:$PROCS_PINNED)}"
 export ZBX_TLSCONNECT=cert
 export ZBX_TLSACCEPT=cert
@@ -298,9 +276,7 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
     while true; do
       RESP=$(curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
-        -d "$(jq -nc --arg v "$PROBE_VERSION" --argjson procs "$PROCS_JSON" --argjson pinned "$PROCS_PINNED_JSON" \
-              --argjson cpu "$(cpu_json 2>/dev/null || echo '{}')" \
-              '{version:$v, scans:true, sweeps:true, procs:$procs, procs_pinned:$pinned, cpu:$cpu}')" \
+        -d "$(checkin_body "$PROBE_VERSION" "$PROCS_JSON" "$PROCS_PINNED")" \
         "$CHECKIN_URL" 2>/dev/null || true)
       JOB=$(printf '%s' "$RESP" | jq -c '.scan // empty' 2>/dev/null || true)
       if [ -n "$JOB" ]; then

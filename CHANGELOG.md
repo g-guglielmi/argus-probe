@@ -18,6 +18,20 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r29] - 2026-10-12
+
+### Fixed
+- The probe's minute check-in with Argus works again. Since r8 it sent Argus an empty report on
+  every probe without process counts set on its container (all of them, normally), so Argus turned
+  it down: only the report at the container's start got through, with just the version. That left
+  probes not reporting their Zabbix process counts and CPU (the Probes page's "doesn't report its
+  process counts yet"), a new probe never saying it can run scans and UniFi sweeps (offered as
+  "needs probe update"), and queued subnet scans, UniFi sweeps and "Ask the probe" certificate
+  reads never reaching any probe. The container log showed `jq: invalid JSON text passed to
+  --argjson` every minute.
+- A part of the report that can't be read (the process counts, the CPU) is now left out on its own
+  instead of emptying the whole report, and the image's CI checks the report before every build.
+
 ## [probe/v7.0.31-r28] - 2026-10-08
 
 ### Added

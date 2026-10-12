@@ -61,6 +61,15 @@ jobs:
         with:
           fetch-depth: 0   # need full tags so the probe/v* existence check is accurate
 
+      # Before anything is built or pushed: the entrypoint parses under a POSIX sh, and the minute
+      # check-in report is always JSON Argus can read (an empty one went unnoticed from r8 to r28).
+      # dash stands in for the image's busybox sh; the runner has jq.
+      - name: Test the entrypoint and the check-in report
+        run: |
+          dash -n deploy/probe-image/entrypoint.sh
+          dash -n deploy/probe-image/checkin.sh
+          dash deploy/probe-image/tests/test_checkin.sh
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GHCR

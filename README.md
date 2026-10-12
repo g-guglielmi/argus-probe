@@ -36,8 +36,12 @@ via cloud-init (a seed ISO) is also supported, in which case this page is skippe
 ## Check-in & network discovery
 
 The running probe reports to Argus every **60 seconds** (`POST /api/probes/checkin`, Bearer probe
-token minted at enrollment): `{"version": "<zabbix>-r<n>", "scans": true, "sweeps": true}` - its
-image version plus the **network-scan** and **UniFi-sweep capability** adverts. The response
+token minted at enrollment): `{"version": "<zabbix>-r<n>", "scans": true, "sweeps": true, "procs":
+{...}, "procs_pinned": [...], "cpu": {...}}` - its image version, the **network-scan** and
+**UniFi-sweep capability** adverts, and the process counts and CPU described below. The report is
+built by `checkin.sh` (sourced by the entrypoint): a part it can't read is sent as `null`, which Argus
+skips, so the rest still gets through; `tests/test_checkin.sh` checks it under dash in CI before every
+image build. The response
 carries the fleet target, the current core host (fleet re-point), and, when an Argus admin has
 queued a discovery job for this probe, ONE one-shot job:
 
