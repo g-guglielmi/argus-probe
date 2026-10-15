@@ -18,6 +18,16 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r30] - 2026-10-15
+
+### Fixed
+- CPU utilization of a Linux host monitored over SSH can't read past 100 % or under 0 % any more.
+  It is worked out from two reads of the kernel's CPU counters a second apart, and the kernel
+  documents that the I/O-wait counter can go backwards: on a busy, disk-heavy host the idle share
+  could come out negative (a reading over 100 %) and overshoot on the next read, raising and clearing a CPU
+  warning. Each counter's change is taken on its own now, a counter that went backwards counts as
+  no time, and the share is held to 0-100 (the same script as argus-core's).
+
 ## [probe/v7.0.31-r29] - 2026-10-12
 
 ### Fixed

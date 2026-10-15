@@ -243,33 +243,38 @@ def known_hosts_path():
 
 def parse_stat(block):
     # The aggregate "cpu " line: user nice system idle iowait irq softirq steal guest guest_nice.
-    # guest and guest_nice are already inside user and nice, so the total stops at steal.
+    # guest and guest_nice are already inside user and nice, so only the first eight count.
     for line in block.splitlines():
         if line.startswith("cpu "):
             vals = [int(x) for x in line.split()[1:] if x.isdigit()]
             if len(vals) < 4:
                 return None
-            idle = vals[3] + (vals[4] if len(vals) > 4 else 0)  # idle + iowait
-            total = sum(vals[:8])
-            iowait = vals[4] if len(vals) > 4 else None
-            steal = vals[7] if len(vals) > 7 else None
-            return {"total": total, "idle": idle, "iowait": iowait, "steal": steal}
+            return vals[:8]
     return None
 
 
 def cpu_shares(s1, s2):
     """CPU utilisation, iowait and steal in percent between two parse_stat samples (None where a
-    counter is missing or the samples are unusable)."""
+    counter is missing or the samples are unusable).
+
+    Each counter's change is taken on its own and a counter that went backwards counts as no
+    time: the kernel documents that iowait can decrease (and idle with it, on tickless kernels), so
+    differencing the sums gave a negative idle share, a utilisation over 100 %, and on the next
+    sample the overshoot the other way, under 0 %. The result is held to 0-100 as well."""
     out = {"util": None, "iowait": None, "steal": None}
     if not s1 or not s2:
         return out
-    dt = s2["total"] - s1["total"]
+    n = min(len(s1), len(s2))
+    d = [max(0, s2[i] - s1[i]) for i in range(n)]
+    dt = sum(d)
     if dt <= 0:
         return out
-    out["util"] = round(100.0 * (dt - (s2["idle"] - s1["idle"])) / dt, 2)
-    for k in ("iowait", "steal"):
-        if s1[k] is not None and s2[k] is not None:
-            out[k] = round(max(0.0, 100.0 * (s2[k] - s1[k]) / dt), 2)
+    idle = d[3] + (d[4] if n > 4 else 0)  # idle + iowait
+    out["util"] = round(min(100.0, max(0.0, 100.0 * (dt - idle) / dt)), 2)
+    if n > 4:
+        out["iowait"] = round(100.0 * d[4] / dt, 2)
+    if n > 7:
+        out["steal"] = round(100.0 * d[7] / dt, 2)
     return out
 
 
