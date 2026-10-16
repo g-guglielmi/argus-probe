@@ -18,6 +18,14 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r31] - 2026-10-17
+
+### Security
+- **The probe image is signed** (Sigstore, keyless): the signature is bound to this repository's
+  build workflow and recorded in the public transparency log. The argus-updater checks it before
+  it recreates a proxy on a new image, so an image that someone pushed with a registry token,
+  not this build, is refused on every probe host. The image itself is otherwise unchanged from r30.
+
 ## [probe/v7.0.31-r30] - 2026-10-15
 
 ### Fixed

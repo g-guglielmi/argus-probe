@@ -41,6 +41,7 @@ on:
 permissions:
   contents: write   # commit the lockfile, push the probe/v* tag, publish the Release
   packages: write   # push the image to GHCR
+  id-token: write   # keyless cosign: the signature names this workflow as the signer
 
 concurrency:
   group: probe-image
@@ -203,6 +204,7 @@ jobs:
           EOF
 
       - name: Build & push argus-probe
+        id: build
         if: steps.decide.outputs.build == 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -222,6 +224,20 @@ jobs:
             io.argus.probe.revision=${{ steps.plan.outputs.revision }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Keyless signature (Sigstore): the image digest is signed with a short-lived certificate bound
+      # to THIS workflow's identity and recorded in the public transparency log. The argus-updater
+      # verifies it before it recreates a proxy on a new image, so an image that someone pushed with
+      # a registry token, not this build, is refused on every probe host:
+      # cosign verify --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      #   --certificate-identity-regexp '^https://github.com/<owner>/argus-probe/.github/workflows/probe-image.yml@' <image>@<digest>
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: steps.decide.outputs.build == 'true'
+      - name: Sign the image
+        if: steps.decide.outputs.build == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "ghcr.io/${{ github.repository_owner }}/argus-probe@${DIGEST}"
 
       # Record the new state (always, when built) and cut a Release when the plan calls for one.
       - name: Record state & release
