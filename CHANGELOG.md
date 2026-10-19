@@ -18,6 +18,17 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.31-r32] - 2026-10-19
+
+### Security
+- **The image takes Alpine's current patches at every build.** The weekly scan in argus-core found
+  libexpat 2.8.5-r0 in the image with a HIGH advisory (CVE-2026-77214, fixed in 2.9.0-r0), next to
+  the expat and zlib MEDIUMs (CVE-2026-102633, CVE-2026-85091) carried since r31. They come with
+  the stock Zabbix proxy image, and a fix in Alpine's branch reached the probe only when Zabbix
+  rebuilt that image. The Dockerfile now runs `apk upgrade` before it adds its packages, so every
+  build of ours patches the base's own packages too. Nothing else changes; the fleet moves to this
+  image through the updater as usual.
+
 ## [probe/v7.0.31-r31] - 2026-10-17
 
 ### Security
