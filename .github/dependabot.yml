@@ -1,0 +1,12 @@
+# Dependabot keeps the SHA-pinned actions in the two workflows moving with a reviewed pull request.
+# The probe image's base is not pinned here on purpose: it tracks zabbix/zabbix-proxy-sqlite3's
+# alpine-7.0-latest tag, and probe-image.yml rebuilds (and releases) by itself when that tag moves,
+# checked daily. The other half of the watch is the core repo's weekly scan (argus-core, scan.yml):
+# every Monday it reads the published image and this checkout.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies, ci]

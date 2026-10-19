@@ -1,0 +1,9 @@
+# Read by Trivy when the core repo's weekly scan (argus-core, .github/workflows/scan.yml) checks this
+# repository for misconfigurations and secrets: the deliberate exceptions, each with its reason.
+#
+# DS-0002 "last USER should not be root" (deploy/probe-image/Dockerfile): the image's entrypoint runs
+# as root on purpose. It prepares the fresh, root-owned /var/lib/zabbix volume and chowns the enrolled
+# certificates, then hands off to the stock Zabbix entrypoint, which drops to the unprivileged zabbix
+# user before the proxy starts. The proxy itself never runs as root.
+DS-0002
+DS002

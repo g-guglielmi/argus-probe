@@ -99,6 +99,10 @@ container the load average is the whole host's.
   notes. A `probe-vm/v*` tag needs its section first (the build fails without it); a probe-image
   release uses its section when present and otherwise lists the commits since the previous probe
   tag. The changelog header explains how to name the next probe-image section.
+- The core repository's weekly scan (`argus-core`, `scan.yml`) reads the published image for known
+  vulnerabilities and this checkout for misconfigurations and secrets; the image's root user is its
+  one deliberate exception, listed in `.trivyignore` with the reason. Dependabot keeps the
+  workflows' action pins moving.
 
 See `deploy/probe-vm/README.md` for building and deploying the VM.
 
