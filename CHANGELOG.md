@@ -18,6 +18,23 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe-vm/v0.3.6] - 2026-10-23
+
+The VM image with the host tools installed at build and the console menu as the break-glass
+account's login shell. It is what a new probe VM boots from; a probe VM already running keeps its
+host files until it is re-imaged (or opts in by writing `host-tools.json` into its data folder).
+
+### Added
+- **The host tools installed at image build** from `deploy/probe-vm/host` (`install-host-tools.py
+  --root /`), with `host-tools.json` in `/docker/argus-probe` as the sign the argus-updater looks for.
+- **The console menu is the `argus` account's login shell**: first boot runs
+  `argus-console --make-login-shell argus` after it creates the break-glass user.
+- **`cloud-guest-utils`** in the image, for the menu's "Grow the disk".
+
+The image pulls argus-probe `:latest` (7.0.32-r2) and argus-updater `:latest` (0.2.17) at build.
+
+## [probe/v7.0.32-r2] - 2026-10-23
+
 ### Added
 - **The probe VM's host side rides the image** (`deploy/probe-vm/host/`, carried as `/host-tools`
   with a manifest and `install-host-tools.py`): the OS reporter, the console menu and their units
@@ -31,7 +48,6 @@ listed together newest first, each section headed by its exact release tag:
   updater, a check-in with Argus on demand, logs, the core this probe talks to, OS updates, grow
   the disk, keyboard and time zone, reboot, power off and a shell. First boot makes it the
   account's login shell; ssh commands and scp still reach bash.
-- **`cloud-guest-utils`** in the VM image, for the menu's "Grow the disk".
 
 ### Changed
 - **The OS reporter** moved to `/usr/local/sbin/argus-os-report` (from the host tools) and also
