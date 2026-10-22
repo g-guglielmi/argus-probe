@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+
+# argus-host-tools-apply - the last step of a host tools update on a probe VM (DESIGN 14c). The probe
+# image carries the VM's host scripts and units; after each probe update the argus-updater writes
+# them to the host (install-host-tools.py), and a container cannot reload systemd, so it drops
+# host-tools-apply.json in the probe's data folder and argus-host-tools.path starts this: reload,
+# enable what the marker lists (every timer and path unit of the manifest), re-report. Local, never
+# remote.
+set -u
+DIR="${ARGUS_STATE_DIR:-/docker/argus-probe}"
+REQ="$DIR/host-tools-apply.json"
+[ -f "$REQ" ] || exit 0
+units="$(sed -n 's/.*"enable": *"\([^"]*\)".*/\1/p' "$REQ")"
+rm -f "$REQ"
+systemctl daemon-reload
+for u in $units; do
+  systemctl enable --now "$u" >/dev/null 2>&1 || logger -t argus-host-tools "could not enable $u"
+done
+logger -t argus-host-tools "host tools applied (${units:-nothing to enable})"
+ARGUS_STATE_DIR="$DIR" /usr/local/sbin/argus-os-report || true

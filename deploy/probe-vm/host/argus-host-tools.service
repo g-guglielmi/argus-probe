@@ -1,0 +1,7 @@
+[Unit]
+Description=Argus: enable the host tools the updater installed (DESIGN 14c)
+
+[Service]
+Type=oneshot
+Environment=ARGUS_STATE_DIR=@STATE_DIR@
+ExecStart=/usr/local/sbin/argus-host-tools-apply

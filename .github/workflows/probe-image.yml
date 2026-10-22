@@ -34,6 +34,7 @@ on:
       - 'deploy/probe-image/**'
       - '!deploy/probe-image/.zabbix-base'        # the bot rewrites this every run; never a "wrapper change"
       - '!deploy/probe-image/docker-compose.yml'  # a deploy artifact, not part of the built image
+      - 'deploy/probe-vm/host/**'                 # the VM's host tools ride the image (DESIGN 14c)
   schedule:
     - cron: '17 6 * * *'   # daily ~06:17 UTC; an LTS patch line rarely moves faster
   workflow_dispatch:        # "Run workflow" button forces an immediate check/rebuild
@@ -70,6 +71,11 @@ jobs:
           dash -n deploy/probe-image/entrypoint.sh
           dash -n deploy/probe-image/checkin.sh
           dash deploy/probe-image/tests/test_checkin.sh
+
+      # The VM's host tools ride the image: the installer writes what the manifest says, the manifest
+      # matches the folder, the scripts parse.
+      - name: Test the host tools
+        run: python3 deploy/probe-vm/host/tests/test_host_tools.py
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -210,6 +216,8 @@ jobs:
         with:
           context: ./deploy/probe-image
           file: ./deploy/probe-image/Dockerfile
+          build-contexts: |
+            hosttools=./deploy/probe-vm/host
           pull: true          # re-resolve the freshest base at build time
           push: true
           provenance: true

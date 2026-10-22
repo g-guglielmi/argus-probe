@@ -59,6 +59,31 @@ The **console keyboard layout** is configurable per-VM (it matters for typing th
 console): pick it in Add-probe → **VM**, or on the first-boot setup page. It's written to
 `/etc/vconsole.conf` on first boot; the default is `us`.
 
+Logging in as `argus` opens the **console menu** instead of a shell prompt: the VM's address,
+gateway and DNS, the core it reports to, time sync, disk usage, pending OS updates and the state of
+Docker, the proxy and its updater; then numbered actions: configure networking (DHCP or a static
+address, with a safety revert when you change it over SSH), change the hostname, test connectivity
+(gateway, DNS, the core, the registries, time sync), restart the probe or the updater, check in
+with Argus right now, view logs, change the core this probe talks to, install OS updates, grow the
+disk, keyboard layout and time zone, reboot, power off, and **Open a shell** for everything else
+(a normal bash; `sudo` asks the password as usual). Ssh commands and scp with the account work
+unchanged. The menu is `argus-console`, the same file as the core's (argus-core,
+`deploy/core/host`), with a probe profile; DESIGN 14f there.
+
+## Host tools: the VM's scripts follow the probe release
+
+The VM's host side (`argus-os-report`, the console menu and its login wrapper, their systemd
+units, the apply script) lives in `host/` with a `manifest`, and the probe image carries that folder
+as `/host-tools`. The image build installs it on the VM (`install-host-tools.py --root /`) and
+writes `host-tools.json` into `/docker/argus-probe`, the sign of a probe VM. From then on the
+argus-updater sidecar (0.2.17 and later) runs the probe image once after each probe update, and
+daily, with `/usr/local/sbin`, `/etc/systemd/system` and the data folder bound, and the installer
+writes what changed; `argus-host-tools.path` reloads systemd when a unit changed. The outcome goes
+to Argus in the sidecar's check-in and shows on the Probes page beside the OS status. A change to
+`host/**` is a probe release like any image change (DESIGN 14c in argus-core). A probe VM built
+before this (no `host-tools.json`) keeps its files as they are until it is re-imaged; writing that
+file by hand opts it in.
+
 ## OS patching & lifecycle
 
 The image keeps its Debian OS patched with no operator action (DESIGN §14c). It's **cattle**: both the
@@ -70,8 +95,9 @@ patch and the reboot are hands-off.
   (`Automatic-Reboot-Time`). Probes buffer 7 days offline, so a ~60 s reboot is invisible.
 - **`argus-os-report.timer`** posts the VM's pending **security-update count** and **reboot-required**
   flag to Argus hourly (`POST /api/probes/os-status`, probe-token auth), so the **Probes** page's **OS**
-  column shows which sites carry CVEs or are waiting on their reboot window. It only *reports* - Argus
-  never runs `apt` remotely (no clean rollback); the hypervisor snapshot is the safety net.
+  column shows which sites carry CVEs or are waiting on their reboot window, and keeps the same as
+  `os-status.json` in `/docker/argus-probe` for the console menu. It only *reports* - Argus never
+  runs `apt` remotely (no clean rollback); the hypervisor snapshot is the safety net.
 
 Refresh the golden image periodically (quarterly / on a Debian point release) so new probes ship
 already-patched. A **major** Debian upgrade (13 → 14) is a deliberate re-image, never unattended.

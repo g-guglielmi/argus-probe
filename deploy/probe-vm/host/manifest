@@ -1,0 +1,14 @@
+# The Argus probe VM's host files (DESIGN 14c, the probe host-tools channel): source in this folder,
+# destination on the host, mode, flags.
+# flags: render = substitute @STATE_DIR@ with the probe's data folder (the host path);
+#        enable = systemctl enable --now it (timers and path units).
+# install-host-tools.py reads this: at image build on the VM itself, and after each probe update
+# when the argus-updater runs the probe image once against the host. Keep it the one list.
+argus-os-report              /usr/local/sbin/argus-os-report                      0755
+argus-host-tools-apply       /usr/local/sbin/argus-host-tools-apply               0755
+argus-console                /usr/local/sbin/argus-console                        0755
+argus-console-login          /usr/local/sbin/argus-console-login                  0755
+argus-os-report.service      /etc/systemd/system/argus-os-report.service          0644 render
+argus-os-report.timer        /etc/systemd/system/argus-os-report.timer            0644 enable
+argus-host-tools.service     /etc/systemd/system/argus-host-tools.service         0644 render
+argus-host-tools.path        /etc/systemd/system/argus-host-tools.path            0644 render enable

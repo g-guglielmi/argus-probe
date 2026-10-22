@@ -18,6 +18,25 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+### Added
+- **The probe VM's host side rides the image** (`deploy/probe-vm/host/`, carried as `/host-tools`
+  with a manifest and `install-host-tools.py`): the OS reporter, the console menu and their units
+  are installed at image build and, from updater 0.2.17, kept current by the sidecar after each
+  probe update, so they follow the probe release instead of a new VM image. `host-tools.json` in
+  the data folder marks a probe VM; a container probe is left alone.
+- **A console menu on the probe VM** (`argus-console`, the same file as the core's): logging in as
+  the break-glass `argus` account shows the address, the core it reports to, time sync, disk, OS
+  updates and the state of Docker, the proxy and its updater, then networking (with a safety
+  revert over SSH), hostname, a connectivity test including the core, restart the probe or the
+  updater, a check-in with Argus on demand, logs, the core this probe talks to, OS updates, grow
+  the disk, keyboard and time zone, reboot, power off and a shell. First boot makes it the
+  account's login shell; ssh commands and scp still reach bash.
+- **`cloud-guest-utils`** in the VM image, for the menu's "Grow the disk".
+
+### Changed
+- **The OS reporter** moved to `/usr/local/sbin/argus-os-report` (from the host tools) and also
+  keeps `os-status.json` in `/docker/argus-probe` for the console menu.
+
 ## [probe/v7.0.31-r32] - 2026-10-19
 
 ### Security

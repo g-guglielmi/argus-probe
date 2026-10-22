@@ -59,6 +59,14 @@ RUN chmod 0755 /usr/lib/zabbix/externalscripts/*.py
 # and the start-time check-in with Argus.
 COPY healthcheck.py /app/healthcheck.py
 RUN chmod 0755 /app/healthcheck.py
+
+# The probe VM's host side (the OS reporter, the console menu, their units, the installer and the
+# manifest) rides the image, so a probe update reaches the host too: after each update the
+# argus-updater runs this image once against the host and install-host-tools.py writes what changed
+# (DESIGN 14c, the probe host-tools channel). From the build context named hosttools
+# (deploy/probe-vm/host); the label tells the updater where to look.
+COPY --from=hosttools . /host-tools/
+LABEL io.argus.host-tools="/host-tools"
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 CMD ["python3", "/app/healthcheck.py"]
 ENTRYPOINT ["/usr/local/bin/argus-entrypoint.sh"]
 # Overriding ENTRYPOINT clears the base image's CMD, so restore it - this is the command our

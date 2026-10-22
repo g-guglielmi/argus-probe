@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 g-guglielmi
-
-"""Report this probe VM's OS patch status to Argus (DESIGN §14c).
+"""Report this probe VM's OS patch status to Argus (DESIGN 14c) and keep a copy for the console.
 
 The VM patches its own Debian OS locally via unattended-upgrades (security suite only) and reboots
-itself in a weekly ~03:00 window. This reporter only *reports* - it posts the pending security-update
-count and the reboot-required flag to Argus so the fleet view shows which sites carry CVEs / need a
-reboot. Run hourly by argus-os-report.timer.
+itself in a weekly ~03:00 window. This reporter only reports: it posts the pending security-update
+count and the reboot-required flag to Argus, so the fleet view shows which sites carry CVEs or need
+a reboot, and writes the same as os-status.json into the probe's data folder, where the console menu
+reads it. Run hourly by argus-os-report.timer, and after the host tools were applied.
 
-Stdlib only. Authenticated by the same long-lived probe token the enrollment wrote to proxy.env - so
-until the VM has enrolled there's nothing to report and this exits quietly.
+Standard library only. Authenticated by the same long-lived probe token the enrollment wrote to
+proxy.env, so until the VM has enrolled there is nothing to post (the local file is still written).
 """
 import json
 import os
 import re
 import subprocess
+import time
 import urllib.request
 
-META = "/docker/argus-probe/enroll/proxy.env"  # written by the probe container at enrollment
+STATE_DIR = os.environ.get("ARGUS_STATE_DIR", "/docker/argus-probe")
+META = os.path.join(STATE_DIR, "enroll", "proxy.env")   # written by the probe container at enrollment
+STATUS_FILE = os.path.join(STATE_DIR, "os-status.json")
 
 
 def read_kv(path):
@@ -53,22 +56,37 @@ def sec_updates():
 
 
 def os_pretty_name():
-    """The OS pretty-name from /etc/os-release (e.g. "Debian GNU/Linux 13 (trixie)"), "" if unreadable.
-    read_kv keeps the surrounding quotes os-release uses (PRETTY_NAME="..."), so strip them."""
+    """The OS pretty-name from /etc/os-release (e.g. "Debian GNU/Linux 13 (trixie)"), "" if unreadable."""
     return read_kv("/etc/os-release").get("PRETTY_NAME", "").strip().strip('"')
 
 
+def write_status(status):
+    """The local copy, atomically and world-readable: the console menu reads it as root, the probe
+    container could read it through its data volume."""
+    try:
+        tmp = STATUS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(status) + "\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, STATUS_FILE)
+    except OSError:
+        pass
+
+
 def main():
-    env = read_kv(META)
-    token, checkin = env.get("PROBE_TOKEN", ""), env.get("CHECKIN_URL", "")
-    if not token or not checkin:
-        return 0  # not enrolled yet - nothing to report
-    url = checkin.rsplit("/", 1)[0] + "/os-status"  # .../api/probes/checkin -> .../api/probes/os-status
-    body = json.dumps({
+    status = {
         "sec_updates": sec_updates(),
         "reboot_required": os.path.exists("/var/run/reboot-required"),
         "os": os_pretty_name(),
-    }).encode("utf-8")
+        "reported_at": int(time.time()),
+    }
+    write_status(status)
+    env = read_kv(META)
+    token, checkin = env.get("PROBE_TOKEN", ""), env.get("CHECKIN_URL", "")
+    if not token or not checkin:
+        return 0  # not enrolled yet - nothing to post
+    url = checkin.rsplit("/", 1)[0] + "/os-status"  # .../api/probes/checkin -> .../api/probes/os-status
+    body = json.dumps({k: status[k] for k in ("sec_updates", "reboot_required", "os")}).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"Authorization": "Bearer " + token,
                                           "Content-Type": "application/json"})

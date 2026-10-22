@@ -1,5 +1,5 @@
 [Unit]
-Description=Report this probe VM's OS patch status to Argus hourly
+Description=Argus: report this probe VM's OS patch status hourly
 
 [Timer]
 OnBootSec=4min

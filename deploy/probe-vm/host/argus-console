@@ -1,0 +1,1308 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+"""argus-console: the console menu of the Argus core and probe VMs (DESIGN 14f).
+
+The login shell of the appliance's console account (argus-console-login runs it through sudo) and a
+command, `sudo argus-console`, on any host that carries the host tools. Before any key is pressed it
+shows what an operator at the console came to see: address, DNS, the web address (core) or the core
+it reports to (probe), time sync, disk, pending OS updates and the state of every service. Then the
+handful of actions that otherwise end in a search engine: networking (DHCP or static, DNS),
+hostname, a connectivity test, service restarts, logs, OS updates, growing the disk, the keyboard
+layout, reboot, power off, and a shell for everything else; on the core also the console password
+and a Zabbix server restart, on a probe a check-in on demand and the core it talks to.
+
+ONE FILE, TWO REPOSITORIES: this script is kept byte for byte identical in argus-core
+(deploy/core/host/argus-console) and argus-probe (deploy/probe-vm/host/argus-console); it tells the
+two hosts apart at start (ROLE), and the core's weekly scan fails when the copies drift.
+
+Standard library only; every command runs without a shell. Paths can be rooted elsewhere with
+ARGUS_CONSOLE_ROOT and the role forced with ARGUS_CONSOLE_ROLE (the tests do both).
+"""
+import ipaddress
+import json
+import os
+import re
+import select
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+ROOT = os.environ.get("ARGUS_CONSOLE_ROOT", "")
+# A probe VM keeps the proxy's enrollment (proxy.env) in its data folder; a core has the Zabbix server.
+PROBE_DIR = "/docker/argus-probe"
+PROBE_META = ROOT + PROBE_DIR + "/enroll/proxy.env"
+PROBE_ENV = ROOT + "/etc/argus-probe/probe.env"   # the appliance's container env (ZBX_SERVER_HOST may be set there)
+CORE_SIGN = ROOT + "/etc/zabbix/zabbix_server.conf"
+
+
+def detect_role():
+    forced = os.environ.get("ARGUS_CONSOLE_ROLE", "")
+    if forced in ("core", "probe"):
+        return forced
+    if os.path.exists(PROBE_META) and not os.path.exists(CORE_SIGN):
+        return "probe"
+    return "core"
+
+
+ROLE = detect_role()
+STATE_DIR = os.environ.get("ARGUS_STATE_DIR", (ROOT + PROBE_DIR) if ROLE == "probe" else "/docker/argus-update")
+NET_DIR = ROOT + "/etc/systemd/network"
+DHCP_FILE = os.path.join(NET_DIR, "10-argus-dhcp.network")
+# Sorts before the DHCP unit: networkd applies the first matching .network file, so this one wins
+# while it exists and DHCP is back the moment it is removed.
+STATIC_FILE = os.path.join(NET_DIR, "00-argus-static.network")
+HOSTS_FILE = ROOT + "/etc/hosts"
+VCONSOLE_FILE = ROOT + "/etc/vconsole.conf"
+RESOLV_FILES = (ROOT + "/run/systemd/resolve/resolv.conf", ROOT + "/etc/resolv.conf")
+WEB_CERT = ROOT + "/etc/nginx/argus/argus-web.crt"
+REVERT_DIR = ROOT + "/run/argus-console"
+REVERT_BACKUP = os.path.join(REVERT_DIR, "network-before-change.json")
+REVERT_UNIT = "argus-console-net-revert"
+REVERT_AFTER = 180  # seconds a remote operator has to log in again before a network change reverts
+SELF = "/usr/local/sbin/argus-console"
+LOGIN_SHELL = SELF + "-login"
+SHELLS_FILE = ROOT + "/etc/shells"
+SUDOERS_FILE = ROOT + "/etc/sudoers.d/argus-console"
+OS_REPORT = "/usr/local/sbin/argus-os-report"
+
+BANNER = r"""
+    _     ____    ____  _   _  ____
+   / \   |  _ \  / ___|| | | |/ ___|
+  / _ \  | |_) || |  _ | | | |\___ \
+ / ___ \ |  _ < | |_| || |_| | ___) |
+/_/   \_\|_| \_\ \____| \___/ |____/
+""".strip("\n")
+
+if ROLE == "probe":
+    UNITS = (("Docker", "docker"),)
+    CONTAINERS = (("Probe", "argus-probe"), ("updater", "argus-updater"))
+else:
+    UNITS = (("PostgreSQL", "postgresql"), ("Zabbix server", "zabbix-server"), ("nginx", "nginx"), ("Docker", "docker"))
+    CONTAINERS = (("Argus", "argus"), ("updater", "argus-updater"))
+REGISTRIES = (("ghcr.io", 443), ("registry-1.docker.io", 443), ("deb.debian.org", 443))
+
+WIDTH = 80
+
+
+# ------------------------------------------------------------------ commands
+
+def run(cmd, input_text=None, timeout=120):
+    """Run a command without a shell; (returncode, stdout, stderr), never an exception for a missing
+    program or a timeout (those read as a failure with its reason in stderr)."""
+    try:
+        p = subprocess.run(cmd, input=input_text, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return 127, "", "%s is not installed" % cmd[0]
+    except subprocess.TimeoutExpired:
+        return 124, "", "%s did not finish within %d s" % (os.path.basename(cmd[0]), timeout)
+    return p.returncode, p.stdout, p.stderr
+
+
+def out(cmd, timeout=30):
+    rc, so, _ = run(cmd, timeout=timeout)
+    return so.strip() if rc == 0 else ""
+
+
+def interactive(cmd, env=None, preexec=None):
+    """Run a command on the operator's terminal (its own input and output), returning its exit code."""
+    try:
+        return subprocess.run(cmd, env=env, preexec_fn=preexec).returncode
+    except FileNotFoundError:
+        say("%s is not installed on this host." % cmd[0], "err")
+        return 127
+    except KeyboardInterrupt:
+        return 130
+
+
+def log(msg):
+    run(["logger", "-t", "argus-console", msg], timeout=5)
+
+
+def read_file(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def write_file(path, text, mode=0o644):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.chmod(tmp, mode)
+    if os.name == "nt" and os.path.exists(path):
+        os.chmod(path, 0o644)  # the tests run on Windows too, where a read-only file can't be replaced
+    os.replace(tmp, path)
+
+
+def remove_file(path):
+    """Remove a file that may be read-only (the sudoers drop-in); fine if it is already gone."""
+    try:
+        if os.name == "nt" and os.path.exists(path):
+            os.chmod(path, 0o644)
+        os.remove(path)
+    except OSError:
+        pass
+
+
+# ------------------------------------------------------------------ terminal
+
+COLORS = {"ok": "\x1b[32m", "warn": "\x1b[33m", "err": "\x1b[31m", "head": "\x1b[1m", "dim": "\x1b[2m", "brand": "\x1b[36m"}
+
+
+def tty():
+    return sys.stdout.isatty()
+
+
+def paint(text, tone):
+    if not tty() or tone not in COLORS:
+        return text
+    return COLORS[tone] + text + "\x1b[0m"
+
+
+def say(text, tone=None):
+    print(paint(text, tone) if tone else text)
+
+
+def clear():
+    if tty():
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
+
+
+def ask(prompt, default=None):
+    """One line of input; Enter alone gives the default. Ctrl-D reads as an empty answer."""
+    label = "%s [%s]: " % (prompt, default) if default not in (None, "") else prompt + ": "
+    try:
+        answer = input(paint(label, "head")).strip()
+    except EOFError:
+        print()
+        answer = ""
+    return answer if answer else (default or "")
+
+
+def ask_valid(prompt, check, default=None, blank_ok=False):
+    """Ask until `check` accepts the answer; check returns the value or raises ValueError with the
+    reason. A blank answer with blank_ok returns None."""
+    while True:
+        a = ask(prompt, default)
+        if a == "" and blank_ok:
+            return None
+        try:
+            return check(a)
+        except ValueError as e:
+            say("  %s" % e, "err")
+
+
+def pause():
+    try:
+        input(paint("\nPress Enter to go back to the menu", "dim"))
+    except EOFError:
+        pass
+
+
+def wait_enter(seconds):
+    """True if Enter arrives within `seconds` (a remote session that survived the network change)."""
+    try:
+        ready, _, _ = select.select([sys.stdin], [], [], seconds)
+    except (OSError, ValueError):
+        return False
+    if ready:
+        try:
+            sys.stdin.readline()
+        except OSError:
+            pass
+        return True
+    return False
+
+
+def page(text, lines=40):
+    """Show long output a screen at a time."""
+    rows = text.rstrip("\n").split("\n")
+    for i in range(0, len(rows), lines):
+        print("\n".join(rows[i:i + lines]))
+        if i + lines < len(rows):
+            try:
+                more = input(paint("-- more (Enter) or q --", "dim")).strip().lower()
+            except EOFError:
+                return
+            if more == "q":
+                return
+
+
+def is_remote():
+    """A pseudo-terminal means SSH; the VM's own console is a tty or a serial line."""
+    try:
+        name = os.ttyname(sys.stdin.fileno())
+    except OSError:
+        return False
+    return "/pts/" in name
+
+
+# ------------------------------------------------------------------ status
+
+def uptime_text():
+    try:
+        secs = float(read_file(ROOT + "/proc/uptime").split()[0])
+    except (ValueError, IndexError):
+        return ""
+    days, rest = divmod(int(secs), 86400)
+    hours, rest = divmod(rest, 3600)
+    mins = rest // 60
+    if days:
+        return "up %dd %dh" % (days, hours)
+    if hours:
+        return "up %dh %dm" % (hours, mins)
+    return "up %dm" % mins
+
+
+def primary_link():
+    """(interface, gateway) of the default route, or the first wired link without one."""
+    try:
+        routes = json.loads(out(["ip", "-j", "route", "show", "default"]) or "[]")
+    except ValueError:
+        routes = []
+    for r in routes:
+        if r.get("dev"):
+            return r["dev"], r.get("gateway", "")
+    try:
+        links = json.loads(out(["ip", "-j", "link", "show"]) or "[]")
+    except ValueError:
+        links = []
+    for l in links:
+        n = l.get("ifname", "")
+        if n.startswith(("en", "eth")):
+            return n, ""
+    return "", ""
+
+
+def link_addresses(dev):
+    try:
+        info = json.loads(out(["ip", "-j", "-4", "addr", "show", "dev", dev]) or "[]")
+    except ValueError:
+        info = []
+    addrs = []
+    for l in info:
+        for a in l.get("addr_info", []):
+            if a.get("family") == "inet" and a.get("scope") == "global":
+                addrs.append("%s/%s" % (a.get("local"), a.get("prefixlen")))
+    return addrs
+
+
+def dns_servers():
+    for path in RESOLV_FILES:
+        text = read_file(path)
+        if text:
+            return [l.split()[1] for l in text.splitlines() if l.startswith("nameserver") and len(l.split()) > 1]
+    return []
+
+
+def net_mode():
+    return "static" if os.path.exists(STATIC_FILE) else "DHCP"
+
+
+def web_addresses(ip):
+    """The https address that always works, plus the name on the appliance's own certificate."""
+    urls = ["https://%s/" % ip] if ip else []
+    if os.path.exists(WEB_CERT):
+        subj = out(["openssl", "x509", "-in", WEB_CERT, "-noout", "-subject"])
+        m = re.search(r"CN\s*=\s*([A-Za-z0-9.-]+)", subj)
+        if m and m.group(1) != ip:
+            urls.append("https://%s/" % m.group(1))
+    return urls
+
+
+def os_status():
+    try:
+        return json.loads(read_file(os.path.join(STATE_DIR, "os-status.json")) or "{}")
+    except ValueError:
+        return {}
+
+
+def disk_text(path):
+    try:
+        u = shutil.disk_usage(path)
+    except OSError:
+        return ""
+    return "%s %d%% of %s" % (path, round(100.0 * u.used / u.total) if u.total else 0, human(u.total))
+
+
+def same_fs(a, b):
+    try:
+        return os.stat(a).st_dev == os.stat(b).st_dev
+    except OSError:
+        return False
+
+
+DOCKER_DIR = "/docker"
+
+
+def disk_lines():
+    """The root file system, and /docker when it is a file system of its own (on the appliance it
+    is a folder of the root one, so one line says both)."""
+    root = disk_text("/")
+    if not root:
+        return [d for d in (disk_text(DOCKER_DIR),) if d]
+    if os.path.isdir(DOCKER_DIR) and same_fs("/", DOCKER_DIR):
+        return [root + " (holds /docker)"]
+    return [d for d in (root, disk_text(DOCKER_DIR)) if d]
+
+
+def human(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return "%d %s" % (round(n), unit) if unit in ("B", "KB", "MB") else "%.0f %s" % (n, unit)
+        n /= 1024.0
+    return "%d" % n
+
+
+def unit_state(unit):
+    return out(["systemctl", "is-active", unit]) or "inactive"
+
+
+INSPECT_FMT = "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{.Image}}"
+# The updater stamps its own label; the core's build writes the OCI one from git describe.
+VERSION_LABELS = ("io.argus.updater.version", "org.opencontainers.image.version")
+IMAGE_FMT = "|".join('{{index .Config.Labels "%s"}}' % l for l in VERSION_LABELS)
+
+
+def container_state(name):
+    """(state, version): 'healthy' / 'running' / 'exited' / 'missing', and the version of the image it runs."""
+    rc, so, _ = run(["docker", "inspect", "-f", INSPECT_FMT, name], timeout=20)
+    if rc != 0:
+        return "missing", ""
+    parts = (so.strip().split("|") + ["", "", ""])[:3]
+    state = parts[1] or parts[0] or "unknown"
+    return state, image_version(parts[2])
+
+
+def image_version(image):
+    """The version label of the image itself. A container's own labels are a copy taken when it was
+    first created, and the updater's recreate clones that config, so they still say what the first
+    image said long after every update; the image's labels move with the image."""
+    if not image:
+        return ""
+    rc, so, _ = run(["docker", "inspect", "-f", IMAGE_FMT, image], timeout=20)
+    if rc != 0:
+        return ""
+    for v in so.strip().split("|"):
+        if v and v != "<no value>":
+            return v
+    return ""
+
+
+def status():
+    dev, gw = primary_link()
+    addrs = link_addresses(dev) if dev else []
+    ip = addrs[0].split("/")[0] if addrs else ""
+    st = {
+        "hostname": socket.gethostname(), "uptime": uptime_text(), "dev": dev, "gateway": gw, "addrs": addrs, "ip": ip,
+        "mode": net_mode(), "dns": dns_servers(), "web": web_addresses(ip),
+        "ntp": out(["timedatectl", "show", "-p", "NTPSynchronized", "--value"]) == "yes",
+        "tz": out(["timedatectl", "show", "-p", "Timezone", "--value"]),
+        "disks": disk_lines(), "os": os_status(), "tools": host_tools_status(),
+        "units": [(label, unit_state(u)) for label, u in UNITS],
+        "containers": [(label, ) + container_state(c) for label, c in CONTAINERS],
+    }
+    if ROLE == "probe":
+        meta = read_kv(PROBE_META)
+        env = read_kv(PROBE_ENV)
+        st["site"] = meta.get("PROXY_NAME", "")
+        st["core"] = env.get("ZBX_SERVER_HOST") or meta.get("CORE_HOST", "")
+        st["checkin"] = meta.get("CHECKIN_URL", "")
+    return st
+
+
+def read_kv(path):
+    """KEY=value lines (proxy.env, probe.env, os-release); comments and blanks skipped."""
+    out = {}
+    for line in read_file(path).splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def write_kv(path, updates, mode=0o600):
+    """Set keys in a KEY=value file, keeping every other line as it is (a missing key is appended)."""
+    lines = read_file(path).splitlines()
+    done = set()
+    for i, line in enumerate(lines):
+        k = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+        if k in updates:
+            lines[i] = "%s=%s" % (k, updates[k])
+            done.add(k)
+    for k, v in updates.items():
+        if k not in done:
+            lines.append("%s=%s" % (k, v))
+    write_file(path, "\n".join(lines) + "\n", mode)
+
+
+def host_tools_status():
+    """What the updater last did with this host's scripts and units (host-tools.json), if anything."""
+    try:
+        return json.loads(read_file(os.path.join(STATE_DIR, "host-tools.json")) or "{}")
+    except ValueError:
+        return {}
+
+
+def tone_for(state):
+    if state in ("active", "healthy", "running"):
+        return "ok"
+    if state in ("starting", "activating", "unhealthy"):
+        return "warn"
+    return "err"
+
+
+def render_status(st):
+    for l in BANNER.split("\n"):
+        say("  " + l, "brand")
+    print()
+    who = "%s   %s" % (st["hostname"], st["uptime"])
+    what = "  Monitoring cockpit, " + ("probe" + (" " + st["site"] if st.get("site") else "") if ROLE == "probe" else "core")
+    say(what.ljust(WIDTH - 2 - len(who)) + who, "head")
+    print()
+    addr = ", ".join(st["addrs"]) or "no address"
+    if st["gateway"]:
+        addr += " via " + st["gateway"]
+    addr += " (%s)" % st["mode"]
+    if st["dev"]:
+        addr += " on " + st["dev"]
+    line("Address", addr)
+    line("DNS", ", ".join(st["dns"]) or "none")
+    if ROLE == "probe":
+        core = st.get("core") or "not enrolled yet"
+        if st.get("checkin"):
+            core += "   check-in " + (urllib.parse.urlsplit(st["checkin"]).netloc or st["checkin"])
+        line("Core", core)
+    elif st["web"]:
+        line("Web", "   also ".join(st["web"]))
+    line("Time", (paint("synced (NTP)", "ok") if st["ntp"] else paint("not synced", "warn")) + ("  " + st["tz"] if st["tz"] else ""))
+    if st["disks"]:
+        line("Disk", "   ".join(st["disks"]))
+    o = st["os"]
+    if o:
+        n = int(o.get("sec_updates") or 0)
+        os_text = "%d security update%s" % (n, "" if n == 1 else "s") if n else "up to date"
+        if o.get("reboot_required"):
+            os_text += ", " + paint("reboot pending", "warn")
+        if o.get("zbx_candidate") and o.get("zbx_candidate") != o.get("zbx_server"):
+            os_text += ", Zabbix %s available" % o["zbx_candidate"]
+        line("OS", os_text)
+    t = st["tools"]
+    if t.get("state"):
+        text = paint(t["state"], tone_for({"ok": "active", "skipped": "starting"}.get(t["state"], "failed")))
+        if t.get("version"):
+            text += "  " + t["version"]
+        if t.get("message"):
+            text += "  " + t["message"]
+        line("Tools", text)
+    print()
+    line("Services", "   ".join("%s %s" % (label, paint(state, tone_for(state))) for label, state in st["units"]))
+    cs = []
+    for label, state, version in st["containers"]:
+        cs.append("%s%s %s" % (label, " " + version if version else "", paint(state, tone_for(state))))
+    line("", "   ".join(cs))
+    print()
+
+
+def line(key, value):
+    print("  %-11s %s" % (key, value))
+
+
+# ------------------------------------------------------------------ validation
+
+def check_cidr(a):
+    try:
+        iface = ipaddress.ip_interface(a)
+    except ValueError:
+        raise ValueError("write the address with its prefix length, like 10.0.0.10/24")
+    if "/" not in a:
+        raise ValueError("write the address with its prefix length, like 10.0.0.10/24")
+    if iface.network.prefixlen == iface.max_prefixlen:
+        raise ValueError("a /%d leaves no room for a gateway; use the network's prefix (like /24)" % iface.max_prefixlen)
+    return iface
+
+
+def check_gateway_for(iface):
+    def check(g):
+        try:
+            gw = ipaddress.ip_address(g)
+        except ValueError:
+            raise ValueError("not an address")
+        if gw.version != iface.ip.version:
+            raise ValueError("the gateway must be an IPv%d address like the interface" % iface.ip.version)
+        if gw not in iface.network:
+            raise ValueError("%s is outside %s" % (gw, iface.network))
+        if gw == iface.ip:
+            raise ValueError("the gateway is another device, not this one")
+        return gw
+    return check
+
+
+def check_dns(s):
+    servers = []
+    for tok in re.split(r"[,\s]+", s.strip()):
+        if not tok:
+            continue
+        try:
+            servers.append(ipaddress.ip_address(tok))
+        except ValueError:
+            raise ValueError("%s is not an address" % tok)
+    if not servers:
+        raise ValueError("at least one DNS server")
+    if len(servers) > 3:
+        raise ValueError("at most three DNS servers")
+    return servers
+
+
+HOSTNAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
+
+
+def check_hostname(h):
+    h = h.strip().lower()
+    if not h or len(h) > 253 or not HOSTNAME_RE.match(h):
+        raise ValueError("letters, digits and hyphens, labels joined by dots (like zbx-core or zbx-core.example.lan)")
+    return h
+
+
+def check_domain(d):
+    return check_hostname(d)
+
+
+def check_keymap(k):
+    k = k.strip().lower()
+    if not re.fullmatch(r"[a-z][a-z0-9-]{1,15}", k):
+        raise ValueError("a layout name like it, de, us, fr or en-latin9")
+    return k
+
+
+# ------------------------------------------------------------------ networking
+
+def render_static(dev, iface, gw, dns, domain):
+    lines = ["# Written by argus-console: a static address for the primary NIC. Delete this file (or pick DHCP",
+             "# in the console menu) to go back to the DHCP of 10-argus-dhcp.network.",
+             "[Match]", "Name=%s" % dev, "", "[Network]", "Address=%s" % iface.with_prefixlen, "Gateway=%s" % gw]
+    lines += ["DNS=%s" % s for s in dns]
+    if domain:
+        lines.append("Domains=%s" % domain)
+    return "\n".join(lines) + "\n"
+
+
+def apply_network(dev):
+    """Tell networkd about the files; the reconfigure drops and re-sets the link's addresses."""
+    rc, _, err = run(["networkctl", "reload"], timeout=30)
+    if rc == 127:
+        rc, _, err = run(["systemctl", "restart", "systemd-networkd"], timeout=60)
+        return rc == 0, err
+    if rc != 0:
+        return False, err
+    if dev:
+        rc, _, err = run(["networkctl", "reconfigure", dev], timeout=30)
+        return rc == 0, err
+    return True, ""
+
+
+def save_network_backup():
+    before = read_file(STATIC_FILE) if os.path.exists(STATIC_FILE) else None
+    write_file(REVERT_BACKUP, json.dumps({"static": before, "at": int(time.time())}), 0o600)
+
+
+def restore_network_backup():
+    """Put the files back as they were before the change and re-apply them."""
+    try:
+        bk = json.loads(read_file(REVERT_BACKUP) or "{}")
+    except ValueError:
+        bk = {}
+    if "static" not in bk:
+        return False
+    if bk["static"] is None:
+        if os.path.exists(STATIC_FILE):
+            os.remove(STATIC_FILE)
+    else:
+        write_file(STATIC_FILE, bk["static"])
+    os.remove(REVERT_BACKUP)
+    dev, _ = primary_link()
+    return apply_network(dev)[0]
+
+
+def schedule_revert():
+    run(["systemctl", "stop", REVERT_UNIT + ".timer"], timeout=20)
+    rc, _, err = run(["systemd-run", "--unit=" + REVERT_UNIT, "--on-active=%d" % REVERT_AFTER, "--quiet",
+                      SELF, "--revert-network"], timeout=20)
+    return rc == 0, err
+
+
+def cancel_revert(reason):
+    """A revert is pending: stop its timer and keep the change (the operator reached the VM on it)."""
+    if not os.path.exists(REVERT_BACKUP):
+        return False
+    run(["systemctl", "stop", REVERT_UNIT + ".timer"], timeout=20)
+    try:
+        os.remove(REVERT_BACKUP)
+    except OSError:
+        pass
+    log("network change kept: " + reason)
+    return True
+
+
+def configure_network():
+    dev, _ = primary_link()
+    st_mode = net_mode()
+    say("Configure networking", "head")
+    print("  Interface %s, now %s." % (dev or "unknown", st_mode))
+    print("  1) DHCP (the address, gateway and DNS from the network's DHCP server)")
+    print("  2) Static address")
+    choice = ask("Choose", "1" if st_mode == "DHCP" else "2")
+    if choice not in ("1", "2"):
+        return
+    if choice == "1":
+        if not os.path.exists(STATIC_FILE):
+            say("  Already DHCP; nothing to change.", "dim")
+            return
+        save_network_backup()
+        os.remove(STATIC_FILE)
+        summary = "DHCP on %s" % dev
+    else:
+        if not dev:
+            say("  No network interface found.", "err")
+            return
+        current = link_addresses(dev)
+        iface = ask_valid("Address with prefix (like 10.0.0.10/24)", check_cidr, current[0] if current else None)
+        _, gw_now = primary_link()
+        gw = ask_valid("Gateway", check_gateway_for(iface), gw_now or None)
+        dns = ask_valid("DNS servers (one to three, separated by spaces)", check_dns, " ".join(dns_servers()) or None)
+        domain = ask_valid("Search domain (Enter for none)", check_domain, blank_ok=True)
+        text = render_static(dev, iface, gw, dns, domain)
+        print()
+        print("  " + text.replace("\n", "\n  ").rstrip())
+        if ask("Apply this? (yes/no)", "no").lower() != "yes":
+            return
+        save_network_backup()
+        write_file(STATIC_FILE, text)
+        summary = "static %s via %s on %s, DNS %s" % (iface.with_prefixlen, gw, dev, " ".join(str(s) for s in dns))
+    remote = is_remote()
+    if remote:
+        ok, err = schedule_revert()
+        if not ok:
+            say("  Could not arm the safety revert (%s); applying anyway." % err.strip(), "warn")
+    ok, err = apply_network(dev)
+    if not ok:
+        say("  networkd did not take the change: %s" % err.strip(), "err")
+        restore_network_backup()
+        run(["systemctl", "stop", REVERT_UNIT + ".timer"], timeout=20)
+        return
+    log("network changed to " + summary)
+    if not remote:
+        try:
+            os.remove(REVERT_BACKUP)
+        except OSError:
+            pass
+        say("  Applied: %s" % summary, "ok")
+        return
+    say("  Applied: %s" % summary, "ok")
+    print("  You are connected over SSH. If this session survives, press Enter within %d s to keep the" % REVERT_AFTER)
+    print("  change. If it drops, log in again on the new address within %d s; that keeps it too." % REVERT_AFTER)
+    print("  With neither, the previous configuration comes back by itself.")
+    if wait_enter(REVERT_AFTER - 10):
+        cancel_revert("confirmed in the session")
+        say("  Kept.", "ok")
+    else:
+        say("  No answer: the change reverts in a moment unless a new login arrived.", "warn")
+
+
+def revert_network_main():
+    """Run by the timer: nobody confirmed the change or reached the VM on it."""
+    if not os.path.exists(REVERT_BACKUP):
+        return 0
+    ok = restore_network_backup()
+    log("network change reverted: no login within %d s" % REVERT_AFTER if ok else "network revert failed")
+    return 0 if ok else 1
+
+
+# ------------------------------------------------------------------ actions
+
+def change_hostname():
+    say("Change hostname", "head")
+    current = socket.gethostname()
+    new = ask_valid("New hostname", check_hostname, current)
+    if new == current:
+        say("  Unchanged.", "dim")
+        return
+    rc, _, err = run(["hostnamectl", "set-hostname", new], timeout=20)
+    if rc != 0:
+        say("  hostnamectl refused: %s" % err.strip(), "err")
+        return
+    hosts = read_file(HOSTS_FILE)
+    short = new.split(".")[0]
+    entry = "127.0.1.1\t%s%s\n" % (new, " " + short if short != new else "")
+    if re.search(r"(?m)^127\.0\.1\.1\s", hosts):
+        hosts = re.sub(r"(?m)^127\.0\.1\.1\s.*\n?", entry, hosts, count=1)
+    else:
+        hosts = hosts.rstrip("\n") + ("\n" if hosts else "") + entry
+    write_file(HOSTS_FILE, hosts)
+    log("hostname changed %s -> %s" % (current, new))
+    say("  Hostname is now %s." % new, "ok")
+    print("  The web address, the certificates and the Zabbix server are not tied to it; nothing else changes.")
+
+
+def tcp_check(host, port):
+    try:
+        with socket.create_connection((host, port), timeout=5):
+            return True
+    except OSError:
+        return False
+
+
+def test_connectivity():
+    say("Connectivity", "head")
+    dev, gw = primary_link()
+    results = []
+    if gw:
+        rc, _, _ = run(["ping", "-c", "1", "-W", "2", gw], timeout=10)
+        results.append(("gateway %s" % gw, rc == 0, "" if rc == 0 else "no reply"))
+    else:
+        results.append(("gateway", False, "no default route on %s" % (dev or "any interface")))
+    try:
+        socket.getaddrinfo("ghcr.io", 443)
+        results.append(("DNS (%s)" % (", ".join(dns_servers()) or "none"), True, ""))
+    except OSError as e:
+        results.append(("DNS (%s)" % (", ".join(dns_servers()) or "none"), False, str(e)))
+    if ROLE == "probe":
+        meta = read_kv(PROBE_META)
+        core = read_kv(PROBE_ENV).get("ZBX_SERVER_HOST") or meta.get("CORE_HOST", "")
+        if core:
+            ok = tcp_check(core, 10051)
+            results.append(("core %s:10051 (Zabbix server)" % core, ok, "" if ok else "no connection"))
+        u = urllib.parse.urlsplit(meta.get("CHECKIN_URL", ""))
+        if u.hostname:
+            port = u.port or (443 if u.scheme == "https" else 80)
+            ok = tcp_check(u.hostname, port)
+            results.append(("check-in %s:%d (Argus)" % (u.hostname, port), ok, "" if ok else "no connection"))
+    for host, port in REGISTRIES:
+        ok = tcp_check(host, port)
+        results.append(("%s:%d" % (host, port), ok, "" if ok else "no connection"))
+    ntp = out(["timedatectl", "show", "-p", "NTPSynchronized", "--value"]) == "yes"
+    results.append(("time sync (NTP)", ntp, "" if ntp else "clock not synchronised"))
+    for label, ok, why in results:
+        print("  %s  %s%s" % (paint("PASS" if ok else "FAIL", "ok" if ok else "err"), label, ("  " + why) if why else ""))
+    return results
+
+
+def restart(label, unit=None, container=None):
+    say("Restart %s" % label, "head")
+    if ask("Restart %s now? (yes/no)" % label, "no").lower() != "yes":
+        return
+    cmd = ["systemctl", "restart", unit] if unit else ["docker", "restart", container]
+    rc, _, err = run(cmd, timeout=180)
+    if rc == 0:
+        log("%s restarted from the console" % label)
+        say("  %s restarted." % label, "ok")
+    else:
+        say("  Restart failed: %s" % err.strip(), "err")
+
+
+if ROLE == "probe":
+    LOGS = (
+        ("Probe (Zabbix proxy)", ["docker", "logs", "--tail", "150", "argus-probe"]),
+        ("updater", ["docker", "logs", "--tail", "150", "argus-updater"]),
+        ("host tools (OS reporter, this console)",
+         ["journalctl", "-t", "argus-os-report", "-t", "argus-host-tools", "-t", "argus-console", "-n", "150", "--no-pager"]),
+        ("system (warnings and errors)", ["journalctl", "-p", "warning", "-n", "150", "--no-pager"]),
+    )
+else:
+    LOGS = (
+        ("Argus", ["docker", "logs", "--tail", "150", "argus"]),
+        ("updater", ["docker", "logs", "--tail", "150", "argus-updater"]),
+        ("Zabbix server", ["journalctl", "-u", "zabbix-server", "-n", "150", "--no-pager"]),
+        ("PostgreSQL", ["journalctl", "-u", "postgresql", "-u", "postgresql@*", "-n", "150", "--no-pager"]),
+        ("nginx", ["journalctl", "-u", "nginx", "-n", "150", "--no-pager"]),
+        ("host tools (patching, Zabbix updates, this console)",
+         ["journalctl", "-t", "argus-patch", "-t", "argus-zbx-update", "-t", "argus-tz", "-t", "argus-console", "-t", "argus-backup", "-t", "argus-host-tools", "-n", "150", "--no-pager"]),
+        ("system (warnings and errors)", ["journalctl", "-p", "warning", "-n", "150", "--no-pager"]),
+    )
+
+
+def view_logs():
+    say("Logs", "head")
+    for i, (label, _) in enumerate(LOGS, 1):
+        print("  %d) %s" % (i, label))
+    choice = ask("Which", "")
+    if not choice.isdigit() or not 1 <= int(choice) <= len(LOGS):
+        return
+    label, cmd = LOGS[int(choice) - 1]
+    rc, so, err = run(cmd, timeout=60)
+    text = (so + err).strip() or "(nothing logged)"
+    print()
+    page(text)
+
+
+def http_post(url, token, body, timeout=15):
+    """(status, text) of a JSON POST with the probe's bearer token; a transport failure is (0, why)."""
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
+                                 headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, OSError) as e:
+        return 0, str(getattr(e, "reason", e))
+
+
+def checkin_now():
+    """A check-in with Argus right now, with the probe's own credential: proves the path and moves the
+    probe's last check-in in Argus. The proxy container keeps its own minute loop."""
+    say("Check in with Argus", "head")
+    meta = read_kv(PROBE_META)
+    token, url = meta.get("PROBE_TOKEN", ""), meta.get("CHECKIN_URL", "")
+    if not token or not url:
+        say("  This probe has no check-in credential yet (not enrolled, or an older Argus).", "warn")
+        return
+    status, text = http_post(url, token, {})
+    if status == 200:
+        try:
+            resp = json.loads(text)
+        except ValueError:
+            resp = {}
+        target = resp.get("target") or ""
+        say("  Argus answered: check-in recorded%s." % (", fleet target " + target if target else ""), "ok")
+        log("check-in from the console answered by Argus")
+    elif status:
+        say("  Argus answered HTTP %d: %s" % (status, text.strip()[:160] or "no detail"), "err")
+    else:
+        say("  No answer from %s: %s" % (urllib.parse.urlsplit(url).netloc or url, text), "err")
+
+
+def check_host(h):
+    h = h.strip()
+    try:
+        ipaddress.ip_address(h)
+        return h
+    except ValueError:
+        pass
+    return check_hostname(h)
+
+
+def check_url(u):
+    u = u.strip()
+    p = urllib.parse.urlsplit(u)
+    if p.scheme not in ("https", "http") or not p.hostname or not p.path.endswith("/checkin") or p.query or p.fragment:
+        raise ValueError("the check-in URL looks like https://monitoring.example.com/api/probes/checkin")
+    if re.search(r"[^A-Za-z0-9.:/_%-]", u):
+        raise ValueError("unexpected characters in the URL")
+    return u
+
+
+def change_core():
+    """Where this probe reports: the Zabbix server it connects to and the Argus check-in URL. For the
+    day the core moved and Argus can no longer tell the probe itself."""
+    say("The core this probe talks to", "head")
+    meta = read_kv(PROBE_META)
+    env = read_kv(PROBE_ENV)
+    pinned = env.get("ZBX_SERVER_HOST", "")
+    core = pinned or meta.get("CORE_HOST", "")
+    print("  Zabbix server: %s%s" % (core or "unknown", " (set on the container, in probe.env)" if pinned else " (from Argus, in proxy.env)"))
+    print("  Check-in URL:  %s" % (meta.get("CHECKIN_URL") or "unknown"))
+    print("  Argus hands the Zabbix server address to the probe at every check-in (Settings > Probes), so")
+    print("  change it there when Argus is reachable; here is for when it isn't, or the check-in URL moved.")
+    new_core = ask_valid("Zabbix server (hostname or IP)", check_host, core or None)
+    new_url = ask_valid("Check-in URL", check_url, meta.get("CHECKIN_URL") or None)
+    if new_url.startswith("http://") and env.get("ARGUS_ALLOW_INSECURE_CHECKIN") != "true":
+        say("  A plain-http check-in URL is refused by the probe unless probe.env says ARGUS_ALLOW_INSECURE_CHECKIN=true.", "warn")
+    if new_core == core and new_url == meta.get("CHECKIN_URL", ""):
+        say("  Unchanged.", "dim")
+        return
+    if ask("Apply and restart the probe? (yes/no)", "no").lower() != "yes":
+        return
+    if os.path.exists(PROBE_META):
+        write_kv(PROBE_META, {"CORE_HOST": new_core, "CHECKIN_URL": new_url}, 0o600)
+    if pinned:
+        write_kv(PROBE_ENV, {"ZBX_SERVER_HOST": new_core}, 0o600)
+        # The container reads probe.env when it is created, so the unit recreates it.
+        rc, _, err = run(["systemctl", "restart", "argus-probe.service"], timeout=300)
+    else:
+        rc, _, err = run(["docker", "restart", "argus-probe"], timeout=180)
+    if rc == 0:
+        log("core changed from the console: %s, %s" % (new_core, new_url))
+        say("  Done: the probe reports to %s and checks in at %s." % (new_core, new_url), "ok")
+    else:
+        say("  The files are written but the probe did not restart: %s" % err.strip(), "err")
+
+
+def install_updates():
+    say("Install OS updates", "head")
+    o = os_status()
+    n = int(o.get("sec_updates") or 0) if o else -1
+    if n == 0:
+        say("  No security updates are pending.", "ok")
+        if o.get("reboot_required"):
+            say("  A reboot is pending from an earlier update.", "warn")
+        return
+    print("  Installs the pending security updates now (the same ones the nightly run would), with the output here.")
+    if ask("Go ahead? (yes/no)", "no").lower() != "yes":
+        return
+    log("security updates installed from the console")
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    rc = interactive(["unattended-upgrade", "-v"], env=env)
+    if os.path.exists(OS_REPORT):
+        run([OS_REPORT], timeout=60)
+    if rc == 0:
+        say("  Done.", "ok")
+        if os.path.exists(ROOT + "/var/run/reboot-required"):
+            say("  A reboot is required to finish (menu: Reboot the VM).", "warn")
+    else:
+        say("  unattended-upgrade reported a problem (exit %d); the output above has the details." % rc, "err")
+
+
+DISK_RE = re.compile(r"^(/dev/(?:sd[a-z]+|vd[a-z]+|xvd[a-z]+|nvme\d+n\d+|mmcblk\d+))(?:p?)(\d+)$")
+
+
+def split_partition(dev):
+    """/dev/sda1 -> (/dev/sda, 1); /dev/nvme0n1p2 -> (/dev/nvme0n1, 2)."""
+    m = DISK_RE.match(dev)
+    if not m:
+        return None, None
+    return m.group(1), int(m.group(2))
+
+
+def grow_disk():
+    say("Grow the disk", "head")
+    src = out(["findmnt", "-n", "-o", "SOURCE", "/"])
+    fstype = out(["findmnt", "-n", "-o", "FSTYPE", "/"])
+    disk, part = split_partition(src)
+    if not disk:
+        say("  The root file system is on %s, which this menu doesn't know how to grow." % (src or "an unknown device"), "err")
+        return
+    before = shutil.disk_usage("/").total
+    print("  Root file system: %s (%s), %s. Enlarge the virtual disk in the hypervisor first;" % (src, fstype or "?", human(before)))
+    print("  this extends partition %d of %s to the end of the disk and then the file system." % (part, disk))
+    if ask("Go ahead? (yes/no)", "no").lower() != "yes":
+        return
+    rc, so, err = run(["growpart", disk, str(part)], timeout=120)
+    if rc == 127:
+        say("  growpart is not installed (package cloud-guest-utils).", "err")
+        return
+    if rc == 1 and "NOCHANGE" in (so + err):
+        say("  The partition already fills the disk. Enlarge the virtual disk in the hypervisor, then try again.", "warn")
+        return
+    if rc not in (0,):
+        say("  growpart failed: %s" % (err or so).strip(), "err")
+        return
+    if fstype == "xfs":
+        rc, _, err = run(["xfs_growfs", "/"], timeout=120)
+    else:
+        rc, _, err = run(["resize2fs", src], timeout=300)
+    if rc != 0:
+        say("  The partition grew but the file system did not: %s" % err.strip(), "err")
+        return
+    after = shutil.disk_usage("/").total
+    log("root disk grown %s -> %s" % (human(before), human(after)))
+    say("  Done: %s -> %s." % (human(before), human(after)), "ok")
+
+
+def keyboard_and_timezone():
+    say("Keyboard layout and time zone", "head")
+    cur = ""
+    m = re.search(r"(?m)^KEYMAP=(\S+)", read_file(VCONSOLE_FILE))
+    if m:
+        cur = m.group(1)
+    km = ask_valid("Console keyboard layout (it, de, us, fr, ...)", check_keymap, cur or None)
+    if km != cur:
+        text = read_file(VCONSOLE_FILE)
+        if re.search(r"(?m)^KEYMAP=", text):
+            text = re.sub(r"(?m)^KEYMAP=.*$", "KEYMAP=%s" % km, text)
+        else:
+            text = text.rstrip("\n") + ("\n" if text else "") + "KEYMAP=%s\n" % km
+        write_file(VCONSOLE_FILE, text)
+        run(["systemctl", "restart", "systemd-vconsole-setup.service"], timeout=30)
+        log("console keymap set to " + km)
+        say("  Keyboard layout is now %s." % km, "ok")
+    if os.path.exists(os.path.join(STATE_DIR, "timezone.json")):
+        print("  The time zone follows the one set in Argus (Settings), which the host applies within the hour:")
+        print("  change it there, not here.")
+        return
+    tz = ask("Time zone (like Europe/Rome; Enter to keep %s)" % (out(["timedatectl", "show", "-p", "Timezone", "--value"]) or "the current one"), "")
+    if not tz:
+        return
+    if not re.fullmatch(r"[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}", tz) or not os.path.exists(ROOT + "/usr/share/zoneinfo/" + tz):
+        say("  %s is not in the zoneinfo database (names look like Europe/Rome or UTC)." % tz, "err")
+        return
+    rc, _, err = run(["timedatectl", "set-timezone", tz], timeout=20)
+    if rc == 0:
+        run(["systemctl", "try-restart", "zabbix-server"], timeout=60)
+        log("time zone set to " + tz)
+        say("  Time zone is now %s." % tz, "ok")
+    else:
+        say("  timedatectl refused: %s" % err.strip(), "err")
+
+
+def change_password(user):
+    say("Change the console password", "head")
+    if not user or user == "root":
+        say("  Run the menu from the console account (sudo argus-console as that user) to change its password.", "warn")
+        return
+    print("  The password of %s, for the console and SSH." % user)
+    rc = interactive(["passwd", user])
+    if rc == 0:
+        log("console password changed for " + user)
+
+
+def power(action):
+    say("Reboot the VM" if action == "reboot" else "Power off the VM", "head")
+    print("  Argus, Zabbix and the probes' queues carry on after a reboot; collection pauses meanwhile.")
+    word = ask("Type %s to confirm" % action, "")
+    if word.lower() != action:
+        say("  Not confirmed.", "dim")
+        return
+    log("%s requested from the console" % action)
+    rc, _, err = run(["systemctl", action], timeout=30)
+    if rc != 0:
+        say("  Refused: %s" % err.strip(), "err")
+
+
+def open_shell(user):
+    """A normal bash as the console account (sudo stays available, every use logged); back here on exit."""
+    print("  Type exit to come back to the menu.")
+    pw = None
+    if user and user != "root":
+        import pwd  # Unix only; the tests run the rest of this file elsewhere too
+        try:
+            pw = pwd.getpwnam(user)
+        except KeyError:
+            pw = None
+    if pw is None:
+        interactive(["/bin/bash", "-l"])
+        return
+
+    def demote():
+        os.initgroups(pw.pw_name, pw.pw_gid)
+        os.setgid(pw.pw_gid)
+        os.setuid(pw.pw_uid)
+        os.chdir(pw.pw_dir if os.path.isdir(pw.pw_dir) else "/")
+
+    env = {"HOME": pw.pw_dir, "USER": pw.pw_name, "LOGNAME": pw.pw_name, "SHELL": "/bin/bash",
+           "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "TERM": os.environ.get("TERM", "linux"),
+           "LANG": os.environ.get("LANG", "C.UTF-8")}
+    interactive(["/bin/bash", "-l"], env=env, preexec=demote)
+
+
+# ------------------------------------------------------------------ the login shell
+
+def user_exists(user):
+    import pwd  # Unix only
+    try:
+        pwd.getpwnam(user)
+        return True
+    except KeyError:
+        return False
+
+
+def make_login_shell(user, remove=False):
+    """Make the menu what a login of `user` opens: the wrapper as the login shell (listed in
+    /etc/shells) and a sudoers drop-in that lets the account run the menu, and only the menu, without
+    a second password, kept only if visudo accepts it. The appliance's first boot does this for the
+    Debian user; `sudo argus-console --make-login-shell` does it for whoever runs it on any core.
+    --remove-login-shell puts bash back and drops the sudoers file."""
+    if not user or user == "root":
+        say("Say which account: argus-console --make-login-shell <user> (root keeps its shell).", "err")
+        return 1
+    if not user_exists(user):
+        say("There is no user %s on this host." % user, "err")
+        return 1
+    if remove:
+        rc, _, err = run(["usermod", "-s", "/bin/bash", user], timeout=20)
+        if rc != 0:
+            say("usermod refused: %s" % err.strip(), "err")
+            return 1
+        remove_file(SUDOERS_FILE)
+        log("console menu removed as the login shell of " + user)
+        say("Logins of %s open bash again; the menu stays available as sudo argus-console." % user, "ok")
+        return 0
+    if LOGIN_SHELL not in read_file(SHELLS_FILE).split():
+        with open(SHELLS_FILE, "a", encoding="utf-8") as fh:
+            fh.write(LOGIN_SHELL + "\n")
+    write_file(SUDOERS_FILE, "# Written by argus-console: the console menu without a second password for its login account.\n"
+               "%s ALL=(root) NOPASSWD: %s\n" % (user, SELF), 0o440)
+    rc, _, _ = run(["visudo", "-cf", SUDOERS_FILE], timeout=20)
+    if rc != 0:
+        remove_file(SUDOERS_FILE)  # never leave sudo a file it can't parse; the menu then asks the password
+        say("visudo did not accept the sudoers line; the menu will ask the password at login.", "warn")
+    rc, _, err = run(["usermod", "-s", LOGIN_SHELL, user], timeout=20)
+    if rc != 0:
+        say("usermod refused: %s" % err.strip(), "err")
+        return 1
+    log("console menu is now the login shell of " + user)
+    say("Logins of %s (console and SSH) now open the menu; Open a shell gives bash, and ssh commands" % user, "ok")
+    say("and scp still work. Undo with: sudo argus-console --remove-login-shell %s" % user, "ok")
+    return 0
+
+
+# ------------------------------------------------------------------ the menu
+
+if ROLE == "probe":
+    MENU = (
+        ("Network", (
+            ("1", "Configure networking (DHCP or a static address, gateway, DNS)", "network"),
+            ("2", "Change hostname", "hostname"),
+            ("3", "Test connectivity (gateway, DNS, the core, the registries, time sync)", "connectivity"),
+        )),
+        ("Probe", (
+            ("4", "Restart the probe (Zabbix proxy)", "restart-probe"),
+            ("5", "Restart the updater", "restart-updater"),
+            ("6", "Check in with Argus now", "checkin"),
+            ("7", "View logs", "logs"),
+            ("8", "The core this probe talks to", "core"),
+        )),
+        ("Maintenance", (
+            ("9", "Install OS updates now", "updates"),
+            ("10", "Grow the disk (after enlarging the virtual disk)", "grow"),
+            ("11", "Keyboard layout and time zone", "keyboard"),
+            ("12", "!! Reboot the VM !!", "reboot"),
+            ("13", "!! Power off the VM !!", "poweroff"),
+        )),
+        ("Other", (
+            ("14", "Open a shell", "shell"),
+            ("15", "Log out", "logout"),
+        )),
+    )
+else:
+    MENU = (
+        ("Network", (
+            ("1", "Configure networking (DHCP or a static address, gateway, DNS)", "network"),
+            ("2", "Change hostname", "hostname"),
+            ("3", "Test connectivity (gateway, DNS, the registries, time sync)", "connectivity"),
+        )),
+        ("Services", (
+            ("4", "Restart Argus", "restart-argus"),
+            ("5", "Restart the updater", "restart-updater"),
+            ("6", "Restart Zabbix server", "restart-zabbix"),
+            ("7", "View logs", "logs"),
+        )),
+        ("Maintenance", (
+            ("8", "Install OS updates now", "updates"),
+            ("9", "Grow the disk (after enlarging the virtual disk)", "grow"),
+            ("10", "Keyboard layout and time zone", "keyboard"),
+            ("11", "Change the console password", "password"),
+            ("12", "!! Reboot the VM !!", "reboot"),
+            ("13", "!! Power off the VM !!", "poweroff"),
+        )),
+        ("Other", (
+            ("14", "Open a shell", "shell"),
+            ("15", "Log out", "logout"),
+        )),
+    )
+
+
+def render_menu():
+    for group, items in MENU:
+        say("  " + group, "head")
+        for key, label, action in items:
+            text = "%3s) %s" % (key, label)
+            print(paint(text, "err") if action in ("reboot", "poweroff") else text)
+    print()
+
+
+def dispatch(action, user):
+    if action == "network":
+        configure_network()
+    elif action == "hostname":
+        change_hostname()
+    elif action == "connectivity":
+        test_connectivity()
+    elif action == "restart-argus":
+        restart("Argus", container="argus")
+    elif action == "restart-probe":
+        restart("the probe", container="argus-probe")
+    elif action == "restart-updater":
+        restart("the updater", container="argus-updater")
+    elif action == "restart-zabbix":
+        restart("Zabbix server", unit="zabbix-server")
+    elif action == "checkin":
+        checkin_now()
+    elif action == "core":
+        change_core()
+    elif action == "logs":
+        view_logs()
+    elif action == "updates":
+        install_updates()
+    elif action == "grow":
+        grow_disk()
+    elif action == "keyboard":
+        keyboard_and_timezone()
+    elif action == "password":
+        change_password(user)
+    elif action in ("reboot", "poweroff"):
+        power(action)
+    elif action == "shell":
+        open_shell(user)
+        return False
+    elif action == "logout":
+        return None
+    return True
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if "--revert-network" in argv:
+        return revert_network_main()
+    if "--status" in argv:
+        render_status(status())
+        return 0
+    if os.geteuid() != 0:
+        print("argus-console runs as root: sudo argus-console", file=sys.stderr)
+        return 1
+    user = os.environ.get("SUDO_USER") or ""
+    for flag in ("--make-login-shell", "--remove-login-shell"):
+        if flag in argv:
+            i = argv.index(flag)
+            named = argv[i + 1] if i + 1 < len(argv) and not argv[i + 1].startswith("--") else user
+            return make_login_shell(named, remove=flag == "--remove-login-shell")
+    if cancel_revert("a login reached the VM on the new address"):
+        print(paint("The network change made a moment ago is kept: this login reached the VM on it.", "ok"))
+        pause()
+    while True:
+        clear()
+        try:
+            render_status(status())
+        except Exception as e:  # the status is a courtesy; the menu must come up regardless
+            say("  (status unavailable: %s)" % e, "warn")
+            print()
+        render_menu()
+        try:
+            choice = ask("Choose", "")
+        except KeyboardInterrupt:
+            print()
+            continue
+        if choice == "":
+            continue
+        action = None
+        for _, items in MENU:
+            for key, _, a in items:
+                if key == choice:
+                    action = a
+        if action is None:
+            continue
+        print()
+        try:
+            res = dispatch(action, user)
+        except KeyboardInterrupt:
+            print()
+            res = True
+        if res is None:
+            return 0
+        if res:
+            pause()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

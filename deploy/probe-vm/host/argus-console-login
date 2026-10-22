@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+#
+# Login shell of the appliance's console account (DESIGN 14f): an interactive login lands in the
+# console menu, run as root through sudo (the appliance's first boot grants that one command without
+# a password; anywhere else sudo asks for the account's password). A non-interactive login (an ssh
+# command, scp, sftp) is handed to bash untouched, so the account still works for those.
+if [ $# -gt 0 ]; then
+  exec /bin/bash "$@"
+fi
+exec sudo /usr/local/sbin/argus-console

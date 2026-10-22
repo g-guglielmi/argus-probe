@@ -1,0 +1,9 @@
+[Unit]
+Description=Reload systemd when the argus-updater installed host tools
+
+[Path]
+PathChanged=@STATE_DIR@/host-tools-apply.json
+Unit=argus-host-tools.service
+
+[Install]
+WantedBy=multi-user.target

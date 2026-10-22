@@ -264,6 +264,12 @@ def ensure_break_glass():
         # sudo is the whole privilege; a docker-group membership would be a second, unlogged root.
         subprocess.run(["useradd", "-m", "-s", "/bin/bash", "-G", "sudo", BG_USER], check=False)
         subprocess.run(["chpasswd"], input="%s:%s" % (BG_USER, pw), text=True, check=False)
+        # The console menu (DESIGN 14f) is this account's login shell: a login at the hypervisor
+        # console or over SSH opens it, as root through sudo without a second password; ssh commands
+        # and scp pass through to bash. The menu does its own wiring (login shell, /etc/shells, a
+        # sudoers drop-in checked with visudo).
+        if os.path.exists("/usr/local/sbin/argus-console"):
+            subprocess.run(["/usr/local/sbin/argus-console", "--make-login-shell", BG_USER], check=False)
         old = os.umask(0o077)
         try:
             with open(BG_SECRET_FILE, "w", encoding="utf-8") as fh:

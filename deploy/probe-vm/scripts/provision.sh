@@ -16,7 +16,8 @@ echo "==> installing base packages"
 apt-get update
 # systemd-resolved: DHCP DNS under networkd. kbd: console keymaps + loadkeys (configurable keyboard
 # layout). sudo + openssh-server: break-glass admin access (per-VM user, console + SSH over the VPN).
-apt-get install -y --no-install-recommends ca-certificates curl gnupg python3 systemd-resolved kbd sudo openssh-server unattended-upgrades needrestart
+# cloud-guest-utils is growpart, for the console menu's "Grow the disk" (no cloud-init comes with it).
+apt-get install -y --no-install-recommends ca-certificates curl gnupg python3 systemd-resolved kbd sudo openssh-server unattended-upgrades needrestart cloud-guest-utils
 
 echo "==> installing Docker Engine (Docker's apt repository, signing key pinned by fingerprint)"
 install -m 0755 -d /etc/apt/keyrings
@@ -40,9 +41,6 @@ install -D -m 0644 "$FILES/argus-updater.service"      /etc/systemd/system/argus
 install -D -m 0644 "$FILES/argus-firstboot.service"    /etc/systemd/system/argus-firstboot.service
 install -D -m 0644 "$FILES/argus-hostkeys.service"     /etc/systemd/system/argus-hostkeys.service
 install -D -m 0755 "$FILES/argus-firstboot.py"         /usr/local/bin/argus-firstboot.py
-install -D -m 0755 "$FILES/argus-os-report.py"         /usr/local/bin/argus-os-report.py
-install -D -m 0644 "$FILES/argus-os-report.service"    /etc/systemd/system/argus-os-report.service
-install -D -m 0644 "$FILES/argus-os-report.timer"      /etc/systemd/system/argus-os-report.timer
 install -D -m 0600 "$FILES/probe.env.example"          /etc/argus-probe/probe.env.example
 # The probe container's folder: /docker/<container name> (the argus-core repo's docs/folder-layout.md).
 install -d -m 0755 /docker
@@ -67,7 +65,16 @@ systemctl enable argus-firstboot.service
 systemctl enable argus-hostkeys.service
 # OS patch reporter (DESIGN §14c): reports the VM's security-update count + reboot-required to Argus.
 # Enabled at build; it no-ops until enrollment writes the probe token to proxy.env.
-systemctl enable argus-os-report.timer
+# The host tools (the OS reporter, the console menu, their units) come from the same folder the
+# probe image carries as /host-tools, written by the same installer the argus-updater runs after
+# each probe update; the manifest says what and where (DESIGN 14c). host-tools.json marks this
+# VM as one whose host files the updater keeps current.
+python3 "$FILES/../host/install-host-tools.py" --src "$FILES/../host" --root / --state-dir /docker/argus-probe --update-dir /docker/argus-probe --version image-build
+rm -f /docker/argus-probe/host-tools-apply.json
+printf '{"state":"ok","version":"image-build","at":"%s","message":"installed at image build"}
+' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /docker/argus-probe/host-tools.json
+chmod 0644 /docker/argus-probe/host-tools.json
+systemctl enable argus-os-report.timer argus-host-tools.path
 
 echo "==> configuring OS auto-patching (unattended-upgrades, security only)"
 # A probe is "cattle": patch + reboot are fully hands-off. Security suite only, auto-reboot in a weekly
