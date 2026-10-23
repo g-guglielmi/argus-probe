@@ -94,6 +94,12 @@ build {
     source      = "files"
     destination = "/tmp"
   }
+  // The host tools (the manifest, the installer, the scripts and units the probe image also
+  // carries): provision.sh installs them from /tmp/host.
+  provisioner "file" {
+    source      = "host"
+    destination = "/tmp"
+  }
 
   provisioner "shell" {
     execute_command = "sudo -E bash '{{ .Path }}'"

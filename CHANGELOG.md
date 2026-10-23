@@ -18,10 +18,11 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
-## [probe-vm/v0.3.6] - 2026-10-23
+## [probe-vm/v0.3.7] - 2026-10-23
 
 The VM image with the host tools installed at build and the console menu as the break-glass
-account's login shell. It is what a new probe VM boots from; a probe VM already running keeps its
+account's login shell. (probe-vm/v0.3.6 was tagged on the same files but its build failed: the
+build VM had not been given the host folder; nothing was published.) It is what a new probe VM boots from; a probe VM already running keeps its
 host files until it is re-imaged (or opts in by writing `host-tools.json` into its data folder).
 
 ### Added
