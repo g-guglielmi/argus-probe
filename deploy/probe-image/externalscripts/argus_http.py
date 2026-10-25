@@ -13,8 +13,10 @@
 # template reads: per URL whether it answered as expected, the status code, how long it took, the
 # days its certificate has left and, when it didn't answer as expected, why ("returned 502 Bad
 # Gateway", "the page does not contain \"Welcome\"", "the certificate is not trusted: self-signed
-# certificate", "no answer within 10 s"). The list also drives the template's discovery, so each URL
-# becomes its own sensor. Stdlib only.
+# certificate", "no answer within 10 s", "the host name does not resolve", "the resolver did not
+# answer in time"). The list also drives the template's discovery, so each URL becomes its own
+# sensor. A resolver that didn't answer in time (a dropped query, not a name that doesn't exist) is
+# asked once more after a second before the URL is reported down. Stdlib only.
 #
 # Usage (as Zabbix runs it):
 #   argus_http.py <host> <urls> [<scheme> <port> <expect> <verify> <timeout>]
@@ -64,6 +66,7 @@ MAX_URLS = 16
 MAX_REDIRECTS = 5
 MAX_BODY = 1 << 20  # bytes of a page read to look for its text
 RUN_BUDGET = 50  # seconds the whole run may take (the template's item timeout is 60 s)
+RESOLVE_RETRY_WAIT = 1  # seconds before a URL whose resolver didn't answer in time is asked once more
 USER_AGENT = "Argus HTTP check"
 HOST_RE = re.compile(r"^[A-Za-z0-9.:_\[\]-]{1,253}$")
 # Characters a URL entry may hold: no spaces, quotes, backslashes, backticks or "$" (the values reach a
@@ -320,10 +323,18 @@ def verify_reason(e):
 
 # --- fetching ---------------------------------------------------------------------------------------
 
+def temporary_resolution(e):
+    """A resolver that didn't answer (a dropped or refused query, a timeout: EAI_AGAIN), as opposed to
+    one that answered there is no such name."""
+    return isinstance(e, socket.gaierror) and e.errno == getattr(socket, "EAI_AGAIN", -3)
+
+
 def why(e, port, timeout):
     """A failed connection in words."""
     if isinstance(e, socket.timeout):
         return "no answer within %g s (a firewall drops it, or the host is down)" % timeout
+    if temporary_resolution(e):
+        return "the resolver did not answer in time (the DNS server drops or refuses the query)"
     if isinstance(e, socket.gaierror):
         return "the host name does not resolve"
     if isinstance(e, ConnectionRefusedError):
@@ -405,9 +416,21 @@ def certificate(u, mode, timeout):
 
 
 def fetch(entry, codes, mode, timeout):
-    """Check one URL: {id, up 1|0, status, time (None when it didn't answer), cert_days, error}. Its
-    own certificate check, when it has one, wins over the host's mode. A refused certificate makes it
-    down with that reason, but the page is still asked for, so its status and time are read."""
+    """Check one URL: {id, up 1|0, status, time (None when it didn't answer), cert_days, error}. A
+    resolver that didn't answer in time is asked once more after a moment: most dropped queries are
+    single, and a URL is not down because one lookup was."""
+    out = attempt(entry, codes, mode, timeout)
+    if out.pop("retry", False):
+        time.sleep(RESOLVE_RETRY_WAIT)
+        out = attempt(entry, codes, mode, timeout)
+        out.pop("retry", None)
+    return out
+
+
+def attempt(entry, codes, mode, timeout):
+    """One try at a URL. Its own certificate check, when it has one, wins over the host's mode. A
+    refused certificate makes it down with that reason, but the page is still asked for, so its
+    status and time are read. retry marks a resolver that didn't answer in time."""
     mode = entry.mode or mode
     out = {"id": entry.id, "up": 0, "status": None, "time": None, "cert_days": None, "error": ""}
     start = time.monotonic()
@@ -463,6 +486,8 @@ def fetch(entry, codes, mode, timeout):
         return out
     except Exception as e:
         out["error"] = refused or why(e, u.port or {"https": 443, "http": 80}[u.scheme], timeout)
+        if not refused and temporary_resolution(e):
+            out["retry"] = True
         return out
     finally:
         if conn is not None:

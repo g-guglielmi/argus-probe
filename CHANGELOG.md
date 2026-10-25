@@ -18,6 +18,16 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r3] - 2026-10-25
+
+### Fixed
+- **HTTP checks tell a resolver that didn't answer from a name that doesn't exist**
+  (`argus_http.py`). A DNS server that drops or refuses the probe's query made a URL "down" with
+  "the host name does not resolve", the same words as for a name that doesn't exist, and a single
+  dropped lookup was enough. The check now says "the resolver did not answer in time (the DNS
+  server drops or refuses the query)" for that case and asks once more after a second before
+  reporting; a name that doesn't exist is reported at once as before.
+
 ## [probe-vm/v0.3.7] - 2026-10-23
 
 The VM image with the host tools installed at build and the console menu as the break-glass
