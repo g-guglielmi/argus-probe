@@ -16,7 +16,8 @@
 # certificate", "no answer within 10 s", "the host name does not resolve", "the resolver did not
 # answer in time"). The list also drives the template's discovery, so each URL becomes its own
 # sensor. A resolver that didn't answer in time (a dropped query, not a name that doesn't exist) is
-# asked once more after a second before the URL is reported down. Stdlib only.
+# asked once more after a second before the URL is reported down. Names are resolved IPv4 first,
+# IPv6 only when there is no IPv4 address (create_connection). Stdlib only.
 #
 # Usage (as Zabbix runs it):
 #   argus_http.py <host> <urls> [<scheme> <port> <expect> <verify> <timeout>]
@@ -329,6 +330,41 @@ def temporary_resolution(e):
     return isinstance(e, socket.gaierror) and e.errno == getattr(socket, "EAI_AGAIN", -3)
 
 
+def create_connection(address, timeout=None, source_address=None):
+    """socket.create_connection with the name's IPv4 addresses asked for and tried first, its IPv6
+    ones only when it has no IPv4 address. Asked for separately: with one question per family, musl
+    (the probe image's libc) sends a single A question, and a DNS server that answers the AAAA
+    question of an existing name with NXDOMAIN (AdGuard Home does, for a name rewritten to another
+    name) can no longer turn the whole lookup into "no such name". A resolver that didn't answer at
+    all is still reported as such."""
+    host, port = address
+    err = None
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            infos = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
+        except socket.gaierror as e:
+            if err is None or temporary_resolution(e):
+                err = e
+            continue
+        for af, socktype, proto, _, sa in infos:
+            sock = None
+            try:
+                sock = socket.socket(af, socktype, proto)
+                if timeout is not None:
+                    sock.settimeout(timeout)
+                if source_address:
+                    sock.bind(source_address)
+                sock.connect(sa)
+                return sock
+            except OSError as e:
+                err = e
+                if sock is not None:
+                    sock.close()
+    if err is not None:
+        raise err
+    raise OSError("getaddrinfo returns an empty list")
+
+
 def why(e, port, timeout):
     """A failed connection in words."""
     if isinstance(e, socket.timeout):
@@ -370,6 +406,7 @@ def connect(u, ctx, timeout):
         conn = http.client.HTTPSConnection(u.hostname, port, timeout=timeout, context=ctx)
     else:
         conn = http.client.HTTPConnection(u.hostname, port, timeout=timeout)
+    conn._create_connection = create_connection  # IPv4 first; the TLS name (SNI, the check) stays the URL's
     try:
         conn.connect()
     except Exception:

@@ -13,7 +13,8 @@
 # object the "Argus TCP ports" template reads: per port whether it answered, how long the connection
 # took, and when it didn't, why ("connection refused: nothing listens on 3389", "no answer within 3 s",
 # "no route to host"). The list also drives the template's discovery, so each port becomes its own
-# sensor. Nothing is sent over the connection; it is closed as soon as it opens. Stdlib only.
+# sensor. Nothing is sent over the connection; it is closed as soon as it opens. Names are resolved
+# IPv4 first, IPv6 only when there is no IPv4 address (create_connection). Stdlib only.
 #
 # Usage (as Zabbix runs it):
 #   argus_tcp.py <host> <ports> [<timeout>]
@@ -69,10 +70,53 @@ def parse_ports(arg):
     return out
 
 
+def temporary_resolution(e):
+    """A resolver that didn't answer (a dropped or refused query, a timeout: EAI_AGAIN), as opposed to
+    one that answered there is no such name."""
+    return isinstance(e, socket.gaierror) and e.errno == getattr(socket, "EAI_AGAIN", -3)
+
+
+def create_connection(address, timeout=None, source_address=None):
+    """socket.create_connection with the name's IPv4 addresses asked for and tried first, its IPv6
+    ones only when it has no IPv4 address. Asked for separately: with one question per family, musl
+    (the probe image's libc) sends a single A question, and a DNS server that answers the AAAA
+    question of an existing name with NXDOMAIN (AdGuard Home does, for a name rewritten to another
+    name) can no longer turn the whole lookup into "no such name". A resolver that didn't answer at
+    all is still reported as such."""
+    host, port = address
+    err = None
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            infos = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
+        except socket.gaierror as e:
+            if err is None or temporary_resolution(e):
+                err = e
+            continue
+        for af, socktype, proto, _, sa in infos:
+            sock = None
+            try:
+                sock = socket.socket(af, socktype, proto)
+                if timeout is not None:
+                    sock.settimeout(timeout)
+                if source_address:
+                    sock.bind(source_address)
+                sock.connect(sa)
+                return sock
+            except OSError as e:
+                err = e
+                if sock is not None:
+                    sock.close()
+    if err is not None:
+        raise err
+    raise OSError("getaddrinfo returns an empty list")
+
+
 def why(e, port, timeout):
     """A failed connection in words."""
     if isinstance(e, socket.timeout):
         return "no answer within %g s (a firewall drops it, or the host is down)" % timeout
+    if temporary_resolution(e):
+        return "the resolver did not answer in time (the DNS server drops or refuses the query)"
     if isinstance(e, socket.gaierror):
         return "the host name does not resolve"
     if isinstance(e, ConnectionRefusedError):
@@ -92,7 +136,7 @@ def check(host, port, timeout):
     """Connect once: {up 1|0, time seconds (None when down), error}."""
     start = time.monotonic()
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        with create_connection((host, port), timeout=timeout):
             return {"up": 1, "time": round(time.monotonic() - start, 6), "error": ""}
     except Exception as e:
         return {"up": 0, "time": None, "error": why(e, port, timeout)}

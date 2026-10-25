@@ -18,6 +18,16 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r4] - 2026-10-25
+
+### Fixed
+- **HTTP and TCP checks resolve IPv4 first** (`argus_http.py`, `argus_tcp.py`). This image's libc
+  (musl) treats a combined IPv4 and IPv6 lookup as "no such name" when the IPv6 half comes back
+  NXDOMAIN, which AdGuard Home answers for a name rewritten to another name; the checks then
+  reported every such URL as not resolving. Both now ask for IPv4 addresses on their own and try
+  them first, asking for IPv6 only when a name has no IPv4 address. The TCP check also tells a
+  resolver that didn't answer from a name that doesn't exist, like the HTTP one.
+
 ## [probe/v7.0.32-r3] - 2026-10-25
 
 ### Fixed
