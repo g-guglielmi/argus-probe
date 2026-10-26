@@ -18,6 +18,15 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r5] - 2026-10-27
+
+### Security
+- **Rebuilt for Alpine's curl fix.** The weekly scan in argus-core found curl and libcurl 8.22.0-r0
+  in the image with a HIGH advisory (CVE-2026-92392, a use-after-free on HTTP/2 uploads) and a
+  MEDIUM one (CVE-2026-92388, FTP wildcard downloads), both fixed in 8.23.0-r0, which the 3.24
+  branch now ships. The image's build already runs `apk upgrade`, so this release is the same probe
+  rebuilt with the fixed packages; nothing else changes.
+
 ## [probe/v7.0.32-r4] - 2026-10-25
 
 ### Fixed
