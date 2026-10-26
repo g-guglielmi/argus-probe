@@ -224,6 +224,7 @@ jobs:
           sbom: true
           build-args: |
             PROBE_VERSION=${{ steps.ver.outputs.version }}-r${{ steps.plan.outputs.revision }}
+            APK_REFRESH=${{ github.run_id }}
           tags: ${{ steps.plan.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}

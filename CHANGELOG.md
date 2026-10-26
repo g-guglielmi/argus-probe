@@ -18,7 +18,18 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r6] - 2026-10-27
+
+### Security
+- **Every build takes Alpine's current packages; r5's curl fix, for real.** r5 was meant to carry
+  curl and libcurl 8.23.0-r0 (CVE-2026-92392, HIGH; CVE-2026-92388, MEDIUM), but its build reused
+  the cached layer of the `apk upgrade` line, which had not changed, so it shipped r4's 8.22.0-r0.
+  The Dockerfile now declares `APK_REFRESH` before that line and CI passes its run id, so the layer
+  is built afresh every time. Nothing else changes.
+
 ## [probe/v7.0.32-r5] - 2026-10-27
+
+_Superseded by r6: this build reused a cached package layer and still carries curl 8.22.0-r0._
 
 ### Security
 - **Rebuilt for Alpine's curl fix.** The weekly scan in argus-core found curl and libcurl 8.22.0-r0

@@ -29,6 +29,9 @@ USER root
 # `apk upgrade` first: the stock image's own packages (expat, zlib, openssl, ...) are whatever its
 # upstream build took, and a fix in Alpine's branch reaches them only when Zabbix rebuilds; every
 # build of ours takes the branch's current patches instead, so does the daily rebuild on a new base.
+# APK_REFRESH (CI passes its run id) changes on every build, so this layer never comes from the build
+# cache: an unchanged line here would otherwise reuse the packages of the build that cached it.
+ARG APK_REFRESH=dev
 RUN apk upgrade --no-cache && apk add --no-cache openssl curl jq python3 openssh-client sshpass
 
 # Bake the image version (Zabbix version + our wrapper revision, e.g. "7.0.29-r1") so the running
