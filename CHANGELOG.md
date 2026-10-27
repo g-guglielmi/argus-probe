@@ -18,6 +18,23 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe-vm/v0.3.8] - 2026-10-28
+
+The VM image with every hypervisor's guest agent. It is what a new probe VM boots from; a probe VM
+already running gets the same through the probe image (r9 and r10) and keeps its disk.
+
+### Added
+- **Every hypervisor's guest agent, each starting only on its own** (`argus-guest-agent --all` at
+  build, with service starts held): xe-guest-utilities 10.0.0 for XCP-ng and XenServer (XenServer's
+  release, pinned by its checksum), open-vm-tools for VMware, qemu-guest-agent for KVM (Proxmox,
+  libvirt, Nutanix AHV; it runs when the VM has the QEMU guest agent channel) and hyperv-daemons for
+  Hyper-V, so the hypervisor shows the VM's addresses, OS and memory from the first boot.
+- **The OS status reaches Argus as soon as the probe enrolls**: `argus-os-report.path` is enabled at
+  build, so a VM set up with the seed ISO shows its OS version right away instead of up to an hour
+  later.
+
+The image pulls argus-probe `:latest` (7.0.32-r10) and argus-updater `:latest` (0.2.19) at build.
+
 ## [probe/v7.0.32-r10] - 2026-10-28
 
 ### Added
