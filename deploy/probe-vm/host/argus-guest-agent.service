@@ -1,0 +1,14 @@
+[Unit]
+Description=Argus: the hypervisor's guest agent on this appliance VM
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/argus-guest-agent
+# A download or apt run that fails (no network yet at the site) is tried again an hour later.
+Restart=on-failure
+RestartSec=1h
+
+[Install]
+WantedBy=multi-user.target

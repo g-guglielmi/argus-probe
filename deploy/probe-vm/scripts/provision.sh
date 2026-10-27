@@ -74,7 +74,10 @@ rm -f /docker/argus-probe/host-tools-apply.json
 printf '{"state":"ok","version":"image-build","at":"%s","message":"installed at image build"}
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /docker/argus-probe/host-tools.json
 chmod 0644 /docker/argus-probe/host-tools.json
-systemctl enable argus-os-report.timer argus-os-report.path argus-host-tools.path
+systemctl enable argus-os-report.timer argus-os-report.path argus-host-tools.path argus-guest-agent.service
+# Every hypervisor's guest agent (argus-guest-agent: Xen, VMware, KVM, Hyper-V), so the hypervisor shows
+# the VM's addresses and OS whichever one it lands on; each starts only on its own.
+/usr/local/sbin/argus-guest-agent --all
 
 echo "==> configuring OS auto-patching (unattended-upgrades, security only)"
 # A probe is "cattle": patch + reboot are fully hands-off. Security suite only, auto-reboot in a weekly

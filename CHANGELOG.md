@@ -18,6 +18,18 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r10] - 2026-10-28
+
+### Added
+- **The hypervisor's guest agent on the probe VM** (`argus-guest-agent`, a host tool this image
+  brings to the VM: run at boot, and again an hour after a failed try). XCP-ng and XenServer get
+  xe-guest-utilities (XenServer's own release, taken only with its pinned checksum), VMware
+  open-vm-tools, KVM qemu-guest-agent (it runs when the VM has the QEMU guest agent channel),
+  Hyper-V hyperv-daemons, so the hypervisor shows the VM's addresses, OS and memory. Only the one
+  of the hypervisor the VM runs on is installed, and each starts only on its own; a VM that already
+  has a Xen agent keeps it. The next probe-vm image carries all of them from its build. The script
+  is one file with the core VM's (argus-core), and the core's weekly scan fails when they drift.
+
 ## [probe/v7.0.32-r9] - 2026-10-27
 
 ### Fixed

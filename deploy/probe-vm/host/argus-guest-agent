@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+
+# argus-guest-agent - the hypervisor's guest agent on an Argus appliance VM (a probe VM or the core
+# VM), so the hypervisor shows the VM's addresses, OS and memory, and shuts it down cleanly. ONE FILE,
+# TWO REPOSITORIES: argus-probe's deploy/probe-vm/host and argus-core's deploy/core/host carry the
+# same copy (the core's weekly scan fails when they drift).
+#
+#   argus-guest-agent        install the agent of the hypervisor this VM runs on, when it has none
+#                            (argus-guest-agent.service: at boot, and when the host tools bring a
+#                            new copy; an install that fails is tried again an hour later)
+#   argus-guest-agent --all  install every agent, for the image build: one image runs on every
+#                            hypervisor, and none of them starts outside its own
+#
+#   Xen (XCP-ng, XenServer)              xe-guest-utilities, XenServer's own release, pinned below
+#   VMware                               open-vm-tools (Debian)
+#   KVM (Proxmox, Nutanix AHV, QEMU)     qemu-guest-agent (Debian; it starts only when the VM has the
+#                                        guest agent channel, which the hypervisor's VM setting adds)
+#   Hyper-V                              hyperv-daemons (Debian)
+#
+# Only on the appliances: a core installed by hand is your machine, and its guest agent is yours to
+# pick, so there this does nothing. A VM that already has a Xen agent (xe-guest-utilities from the
+# guest tools ISO, or xen-guest-agent) keeps it.
+set -u
+
+XE_VERSION=10.0.0
+XE_URL="https://github.com/xenserver/xe-guest-utilities/releases/download/v${XE_VERSION}/xe-guest-utilities_${XE_VERSION}-1_amd64.deb"
+XE_SHA256=62fa81534a6a0e762ffe40e91fe1e2f3f4850a4270304928eb4aff647a914b13
+PROBE_MARKER="${ARGUS_PROBE_DIR:-/docker/argus-probe}/host-tools.json"   # written at the probe VM's image build
+CORE_MARKER="${ARGUS_CORE_SETUP_DIR:-/var/lib/argus-core-setup}"          # the core VM's first-boot state
+XE_DROPIN="${ARGUS_XE_DROPIN:-/etc/systemd/system/xe-linux-distribution.service.d/argus.conf}"
+
+say() { logger -t argus-guest-agent "$*" 2>/dev/null; echo "argus-guest-agent: $*"; }
+installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"; }
+apt_get() { DEBIAN_FRONTEND=noninteractive apt-get -q -y -o DPkg::Lock::Timeout=600 "$@"; }
+
+# apt_install PKG...: the Debian packages, fresh lists first.
+apt_install() {
+  apt_get update >/dev/null 2>&1 || true
+  apt_get install --no-install-recommends "$@" >/dev/null 2>&1
+}
+
+# xen_agent: xe-guest-utilities from XenServer's release, taken only with its pinned checksum. Its init
+# script fails outside Xen, so a drop-in keeps systemd from starting it anywhere else.
+xen_agent() {
+  local tmp ok=1
+  if ! { installed xe-guest-utilities || installed xen-guest-agent || command -v xe-daemon || command -v xen-guest-agent; } >/dev/null 2>&1; then
+    tmp="$(mktemp -d)" || return 1
+    if curl -fsSL --retry 3 -o "$tmp/xe-guest-utilities.deb" "$XE_URL" &&
+      echo "$XE_SHA256  $tmp/xe-guest-utilities.deb" | sha256sum -c --status; then
+      apt_install "$tmp/xe-guest-utilities.deb" || ok=0
+    else
+      say "could not download xe-guest-utilities $XE_VERSION with its expected checksum"
+      ok=0
+    fi
+    rm -rf "$tmp"
+  fi
+  if installed xe-guest-utilities && [ ! -s "$XE_DROPIN" ]; then
+    install -d -m 0755 "$(dirname "$XE_DROPIN")"
+    printf '# argus-guest-agent: only a Xen VM has the xenstore it writes to.\n[Unit]\nConditionVirtualization=xen\n' > "$XE_DROPIN"
+    systemctl daemon-reload 2>/dev/null || true
+  fi
+  [ "$ok" = 1 ]
+}
+
+# debian_agent PKG: one of Debian's agents, when it isn't there yet.
+debian_agent() {
+  installed "$1" && return 0
+  apt_install "$1"
+}
+
+# agent_for VIRT: install the agent of one hypervisor (systemd-detect-virt's name for it).
+agent_for() {
+  case "$1" in
+    xen) xen_agent ;;
+    vmware) debian_agent open-vm-tools ;;
+    kvm|qemu) debian_agent qemu-guest-agent ;;
+    microsoft) debian_agent hyperv-daemons ;;
+    *) return 0 ;;
+  esac
+}
+
+if [ "${1:-}" = "--all" ]; then
+  # The image build: the services stay down while the packages go in (xe-guest-utilities' start
+  # fails outside Xen, and the build VM is no hypervisor's guest of note); each starts at the
+  # VM's own boot, on its own hypervisor only.
+  policy="${ARGUS_POLICY_RC:-/usr/sbin/policy-rc.d}"
+  own_policy=0
+  if [ ! -e "$policy" ]; then
+    printf '#!/bin/sh\nexit 101\n' > "$policy" && chmod 0755 "$policy" && own_policy=1
+  fi
+  rc=0
+  for v in xen vmware kvm microsoft; do
+    agent_for "$v" || { say "the $v guest agent did not install"; rc=1; }
+  done
+  [ "$own_policy" = 1 ] && rm -f "$policy"
+  exit "$rc"
+fi
+
+if [ ! -e "$PROBE_MARKER" ] && [ ! -d "$CORE_MARKER" ]; then
+  exit 0  # not an Argus appliance VM: a hand-installed core picks its own guest agent
+fi
+virt="$(systemd-detect-virt --vm 2>/dev/null || true)"
+case "$virt" in
+  xen|vmware|kvm|qemu|microsoft) ;;
+  *) exit 0 ;;  # bare metal, or a hypervisor without an agent here
+esac
+# Lists before and after: a run that changes nothing says nothing.
+before="$(dpkg-query -W -f='${Package} ${Status}\n' xe-guest-utilities open-vm-tools qemu-guest-agent hyperv-daemons 2>/dev/null | grep 'install ok installed')"
+if ! agent_for "$virt"; then
+  say "the guest agent for $virt did not install; trying again in an hour"
+  exit 1
+fi
+after="$(dpkg-query -W -f='${Package} ${Status}\n' xe-guest-utilities open-vm-tools qemu-guest-agent hyperv-daemons 2>/dev/null | grep 'install ok installed')"
+if [ "$before" != "$after" ]; then
+  say "installed the guest agent for $virt ($(printf '%s\n' "$after" | cut -d' ' -f1 | paste -sd, -))"
+fi
+exit 0

@@ -134,6 +134,14 @@ packer build argus-probe-vm.pkr.hcl        # -> output/argus-probe-vm.qcow2
 - **KVM / libvirt / Proxmox:** `argus-probe-vm.qcow2` imports directly.
 - **Hyper-V:** `gunzip argus-probe-vm.vhd.gz`, then a Generation 1 VM on the `.vhd`.
 
+**Guest agent**: the image carries every hypervisor's guest agent and only the one of the hypervisor
+it runs on starts, so the hypervisor shows the VM's addresses, OS and memory: xe-guest-utilities on XCP-ng and XenServer
+(XenServer's own release, pinned by its checksum), open-vm-tools on VMware, qemu-guest-agent on KVM
+(Proxmox, libvirt, Nutanix AHV; it runs when the VM has the QEMU guest agent channel, which
+Proxmox adds with Options -> QEMU Guest Agent) and hyperv-daemons on Hyper-V. A probe
+VM built from an older image gets the one it needs with its next probe update (`argus-guest-agent`,
+a host tool); one that already has a Xen agent (from the guest tools ISO) keeps it.
+
 **Give it the enrollment inputs** - either way (in Argus **Add probe → VM**, which also has the
 keyboard-layout picker):
 
