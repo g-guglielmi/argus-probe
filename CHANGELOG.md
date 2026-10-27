@@ -18,6 +18,19 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r7] - 2026-10-27
+
+### Added
+- **The probe takes the renewed monitoring CA by itself.** The core VM now renews the CA two years
+  before its end, signed again with its own key and name (core: `argus-cert-renew`), so every
+  certificate it signed stays trusted and only `ca.crt` needs the new end. The minute check-in reports
+  the SHA-256 of the probe's `ca.crt`, Argus answers a different one with its CA, and the probe saves
+  it only when it is a renewal of the CA it has: one certificate, the same name and key, valid now,
+  ending later. Anything else is refused and said once in the log (`argus-probe: refusing the CA
+  Argus handed out: ...`), since another CA could let another server pass for the core. The Zabbix
+  proxy reads its CA at start, so it uses the renewed one from its next start; one still running on a
+  CA within 30 days of its end stops itself and Docker's restart policy brings it back on the new one.
+
 ## [probe/v7.0.32-r6] - 2026-10-27
 
 ### Security

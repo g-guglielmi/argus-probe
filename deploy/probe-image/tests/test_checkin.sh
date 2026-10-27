@@ -60,6 +60,45 @@ check "unreadable cpu" "$B" "$base and .cpu == null and .procs.StartPollers == 5
 B=$(checkin_body 'dev "quoted" \ back' "$PROCS" "")
 check "odd version" "$B" '.version == "dev \"quoted\" \\ back"'
 
+# The CA's fingerprint rides along when known, and is left out when not.
+B=$(checkin_body 7.0.31-r29 "$PROCS" "" "ab12")
+check "ca reported" "$B" "$base and .ca == \"ab12\""
+B=$(checkin_body 7.0.31-r29 "$PROCS" "" "")
+check "no ca" "$B" "$base and (has(\"ca\") | not)"
+
+# take_ca: only a renewal of the CA the probe trusts replaces its ca.crt.
+# expect NAME CONDITION - a shell condition that must hold.
+expect() {
+  if eval "$2"; then echo "ok   $1"; else echo "FAIL $1: $2"; FAILS=$((FAILS + 1)); fi
+}
+T=$(mktemp -d)
+export MSYS2_ARG_CONV_EXCL="/CN="   # Git Bash on Windows: keep the subject as it is
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$T/ca.key" -out "$T/old.crt" -days 30 -subj "/CN=Monitoring Core CA" >/dev/null 2>&1
+openssl x509 -in "$T/old.crt" -signkey "$T/ca.key" -days 3650 -set_serial 0x0a -out "$T/renewed.crt" >/dev/null 2>&1
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$T/other.key" -out "$T/other.crt" -days 3650 -subj "/CN=Monitoring Core CA" >/dev/null 2>&1
+openssl req -x509 -key "$T/ca.key" -out "$T/renamed.crt" -days 3650 -subj "/CN=Someone Else CA" >/dev/null 2>&1
+cp "$T/old.crt" "$T/ca.crt"
+OLD_FP=$(ca_fp "$T/ca.crt")
+expect "fingerprint is lowercase hex" '[ "${#OLD_FP}" = 64 ] && [ -z "$(printf %s "$OLD_FP" | tr -d 0-9a-f)" ]'
+
+WHY=$(take_ca "$(cat "$T/other.crt")" "$T/ca.crt") && R=0 || R=$?
+expect "another key is refused" '[ "$R" = 1 ] && [ "$(ca_fp "$T/ca.crt")" = "$OLD_FP" ] && [ "$WHY" = "it has another key than the CA this probe trusts" ]'
+WHY=$(take_ca "$(cat "$T/renamed.crt")" "$T/ca.crt") && R=0 || R=$?
+expect "another name is refused" '[ "$R" = 1 ] && [ "$(ca_fp "$T/ca.crt")" = "$OLD_FP" ] && [ "$WHY" = "it has another name than the CA this probe trusts" ]'
+WHY=$(take_ca "not a certificate" "$T/ca.crt") && R=0 || R=$?
+expect "garbage is refused" '[ "$R" = 1 ] && [ "$WHY" = "it is not one certificate" ] && [ ! -e "$T/ca.crt.new" ]'
+WHY=$(take_ca "$(cat "$T/renewed.crt" "$T/other.crt")" "$T/ca.crt") && R=0 || R=$?
+expect "a bundle is refused" '[ "$R" = 1 ] && [ "$WHY" = "it is not one certificate" ]'
+WHY=$(take_ca "$(cat "$T/old.crt")" "$T/ca.crt") && R=0 || R=$?
+expect "the same one is refused" '[ "$R" = 1 ] && [ "$WHY" = "it doesn'"'"'t end later than the one this probe has" ]'
+
+WHY=$(take_ca "$(cat "$T/renewed.crt")" "$T/ca.crt") && R=0 || R=$?
+expect "the renewal is taken" '[ "$R" = 0 ] && [ "$(ca_fp "$T/ca.crt")" = "$(ca_fp "$T/renewed.crt")" ] && [ ! -e "$T/ca.crt.new" ]'
+expect "its end is read" 'case "$(ca_end "$T/ca.crt")" in 20[0-9][0-9]-[01][0-9]-[0-3][0-9]" "*Z) true;; *) false;; esac'
+WHY=$(take_ca "$(cat "$T/old.crt")" "$T/ca.crt") && R=0 || R=$?
+expect "an older one is refused" '[ "$R" = 1 ] && [ "$(ca_fp "$T/ca.crt")" = "$(ca_fp "$T/renewed.crt")" ]'
+rm -rf "$T"
+
 if [ "$FAILS" -gt 0 ]; then
   echo "$FAILS failed"
   exit 1

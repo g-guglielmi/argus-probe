@@ -272,12 +272,36 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
     JOBFILE="$CERTS/scanjob.json"
     SWLOCK="$CERTS/unifisweep.lock"
     SWJOBFILE="$CERTS/sweepjob.json"
+    # The CA the proxy starts with (it reads ca.crt only at start), and the one in ca.crt now.
+    RUN_CA=/tmp/argus-ca-running.crt
+    cp -f "$CA" "$RUN_CA" 2>/dev/null || true
+    RUN_CA_FP=$(ca_fp "$RUN_CA")
+    CA_FP=$RUN_CA_FP
+    CA_REFUSED=""
     umask 077   # a job file carries an SNMP community or a controller key
     while true; do
       RESP=$(curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
-        -d "$(checkin_body "$PROBE_VERSION" "$PROCS_JSON" "$PROCS_PINNED")" \
+        -d "$(checkin_body "$PROBE_VERSION" "$PROCS_JSON" "$PROCS_PINNED" "$CA_FP")" \
         "$CHECKIN_URL" 2>/dev/null || true)
+      # A renewed monitoring CA (see checkin.sh): saved to ca.crt for the proxy's next start. A proxy
+      # still on a CA that ends within 30 days restarts on the renewed one (Docker's restart policy
+      # brings the container back); the renewal comes two years ahead, so an update or a reboot of
+      # the probe has nearly always done that first.
+      NEWCA=$(printf '%s' "$RESP" | jq -r '.ca // empty' 2>/dev/null || true)
+      if [ -n "$NEWCA" ]; then
+        if WHY=$(take_ca "$NEWCA" "$CA"); then
+          echo "argus-probe: the monitoring CA was renewed (it now ends $(ca_end "$CA")); the Zabbix proxy uses it from its next start"
+          CA_FP=$(ca_fp "$CA")
+        elif [ "$WHY" != "$CA_REFUSED" ]; then
+          echo "argus-probe: refusing the CA Argus handed out: $WHY" >&2
+          CA_REFUSED=$WHY
+        fi
+      fi
+      if [ -n "$CA_FP" ] && [ "$CA_FP" != "$RUN_CA_FP" ] && ! openssl x509 -in "$RUN_CA" -noout -checkend 2592000 >/dev/null 2>&1; then
+        echo "argus-probe: the CA the Zabbix proxy started with ends within 30 days: restarting it on the renewed one"
+        kill -TERM 1 2>/dev/null || true
+      fi
       JOB=$(printf '%s' "$RESP" | jq -c '.scan // empty' 2>/dev/null || true)
       if [ -n "$JOB" ]; then
         # A lock older than the scanner's own 8-minute budget is a crashed run - clear it.
