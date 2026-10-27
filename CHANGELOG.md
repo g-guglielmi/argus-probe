@@ -18,6 +18,19 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r8] - 2026-10-27
+
+### Added
+- **The probe renews its own certificate.** Its key never leaves it, so thirty days before the
+  certificate ends the probe makes a new key and asks Argus to sign it (`/api/probes/renew-cert`,
+  core v0.9.9 or newer). It proves who it is with its check-in token AND its current certificate plus
+  a signature over the request made by the current key. The answer is taken only when it is for the
+  new key, the same name, signed by the CA the probe trusts and ending later; the old pair stays as
+  `proxy.crt.old` / `proxy.key.old`, and the proxy restarts on the new one. A failure is logged
+  (`argus-probe: certificate renewal failed, trying again in an hour: ...`) and tried again hourly.
+  The minute check-in also reports when the certificate ends, which Argus shows under Settings >
+  Certificates.
+
 ## [probe/v7.0.32-r7] - 2026-10-27
 
 ### Added

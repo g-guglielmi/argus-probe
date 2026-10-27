@@ -94,9 +94,50 @@ expect "the same one is refused" '[ "$R" = 1 ] && [ "$WHY" = "it doesn'"'"'t end
 
 WHY=$(take_ca "$(cat "$T/renewed.crt")" "$T/ca.crt") && R=0 || R=$?
 expect "the renewal is taken" '[ "$R" = 0 ] && [ "$(ca_fp "$T/ca.crt")" = "$(ca_fp "$T/renewed.crt")" ] && [ ! -e "$T/ca.crt.new" ]'
-expect "its end is read" 'case "$(ca_end "$T/ca.crt")" in 20[0-9][0-9]-[01][0-9]-[0-3][0-9]" "*Z) true;; *) false;; esac'
+expect "its end is read" 'case "$(cert_end "$T/ca.crt")" in 20[0-9][0-9]-[01][0-9]-[0-3][0-9]" "*Z) true;; *) false;; esac'
 WHY=$(take_ca "$(cat "$T/old.crt")" "$T/ca.crt") && R=0 || R=$?
 expect "an older one is refused" '[ "$R" = 1 ] && [ "$(ca_fp "$T/ca.crt")" = "$(ca_fp "$T/renewed.crt")" ]'
+
+B=$(checkin_body 7.0.31-r29 "$PROCS" "" "" "2031-08-10 08:23:27Z")
+check "certificate end reported" "$B" "$base and .cert_end == \"2031-08-10 08:23:27Z\" and (has(\"ca\") | not)"
+
+# renew_cert: Argus stands in as a curl that checks the proof (the request signed by the current key)
+# and signs the request with the CA, or answers for another key, or refuses.
+openssl req -newkey rsa:2048 -nodes -keyout "$T/proxy.key" -out "$T/proxy.csr" -subj "/CN=proxy" >/dev/null 2>&1
+openssl x509 -req -in "$T/proxy.csr" -CA "$T/ca.crt" -CAkey "$T/ca.key" -set_serial 0x0c -days 10 -subj "/CN=proxy-site1" -out "$T/proxy.crt" >/dev/null 2>&1
+MOCK=sign
+curl() {
+  _o=""; _b=""
+  while [ $# -gt 0 ]; do
+    case "$1" in -o) _o=$2; shift;; --data-binary) _b=${2#@}; shift;; esac
+    shift
+  done
+  if [ "$MOCK" = deny ]; then printf '{"error":"renewal refused: nope"}' > "$_o"; printf 403; return 0; fi
+  jq -j .csr "$_b" > "$T/sent.csr"
+  jq -r .sig "$_b" | openssl base64 -d -A > "$T/sent.sig"
+  jq -r .cert "$_b" > "$T/sent.crt"
+  openssl x509 -in "$T/sent.crt" -noout -pubkey > "$T/sent.pub"
+  if ! openssl dgst -sha256 -verify "$T/sent.pub" -signature "$T/sent.sig" "$T/sent.csr" >/dev/null 2>&1; then
+    printf '{"error":"renewal refused: bad proof"}' > "$_o"; printf 403; return 0
+  fi
+  if [ "$MOCK" = other ]; then openssl req -newkey rsa:2048 -nodes -keyout "$T/x.key" -out "$T/sent.csr" -subj "/CN=x" >/dev/null 2>&1; fi
+  openssl x509 -req -in "$T/sent.csr" -CA "$T/ca.crt" -CAkey "$T/ca.key" -set_serial 0x0d -days 1825 -subj "/CN=proxy-site1" -out "$T/new.crt" >/dev/null 2>&1
+  jq -n --rawfile c "$T/new.crt" '{certificate:$c}' > "$_o"
+  printf 200
+}
+OLD_CRT=$(cat "$T/proxy.crt"); OLD_KEY=$(cat "$T/proxy.key")
+MOCK=deny
+WHY=$(renew_cert https://argus.example.lan/api/probes/renew-cert tok "$T/proxy.crt" "$T/proxy.key" "$T/ca.crt") && R=0 || R=$?
+expect "a refusal is said" '[ "$R" = 1 ] && [ "$WHY" = "Argus answered HTTP 403: renewal refused: nope" ] && [ "$(cat "$T/proxy.crt")" = "$OLD_CRT" ]'
+MOCK=other
+WHY=$(renew_cert https://argus.example.lan/api/probes/renew-cert tok "$T/proxy.crt" "$T/proxy.key" "$T/ca.crt") && R=0 || R=$?
+expect "a certificate for another key is refused" '[ "$R" = 1 ] && [ "$WHY" = "the certificate is for another key" ] && [ "$(cat "$T/proxy.key")" = "$OLD_KEY" ]'
+MOCK=sign
+WHY=$(renew_cert https://argus.example.lan/api/probes/renew-cert tok "$T/proxy.crt" "$T/proxy.key" "$T/ca.crt") && R=0 || R=$?
+expect "the renewal is taken" '[ "$R" = 0 ] && [ "$(cat "$T/proxy.key")" != "$OLD_KEY" ] && [ "$(ca_key "$T/proxy.crt")" = "$(openssl pkey -in "$T/proxy.key" -pubout)" ]'
+expect "it ends later, same name" 'openssl x509 -in "$T/proxy.crt" -noout -checkend 31536000 >/dev/null 2>&1 && [ "$(ca_name "$T/proxy.crt")" = "subject=CN=proxy-site1" ]'
+expect "the old pair is kept" '[ "$(cat "$T/proxy.crt.old")" = "$OLD_CRT" ] && [ "$(cat "$T/proxy.key.old")" = "$OLD_KEY" ]'
+unset -f curl
 rm -rf "$T"
 
 if [ "$FAILS" -gt 0 ]; then

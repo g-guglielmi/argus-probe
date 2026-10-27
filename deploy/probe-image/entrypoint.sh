@@ -278,11 +278,14 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
     RUN_CA_FP=$(ca_fp "$RUN_CA")
     CA_FP=$RUN_CA_FP
     CA_REFUSED=""
+    CERT_END=$(cert_end "$CRT")
+    CERT_NEXT_TRY=0
+    RENEW_URL=$(printf '%s' "$CHECKIN_URL" | sed 's#/checkin$#/renew-cert#')
     umask 077   # a job file carries an SNMP community or a controller key
     while true; do
       RESP=$(curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
-        -d "$(checkin_body "$PROBE_VERSION" "$PROCS_JSON" "$PROCS_PINNED" "$CA_FP")" \
+        -d "$(checkin_body "$PROBE_VERSION" "$PROCS_JSON" "$PROCS_PINNED" "$CA_FP" "$CERT_END")" \
         "$CHECKIN_URL" 2>/dev/null || true)
       # A renewed monitoring CA (see checkin.sh): saved to ca.crt for the proxy's next start. A proxy
       # still on a CA that ends within 30 days restarts on the renewed one (Docker's restart policy
@@ -291,7 +294,7 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
       NEWCA=$(printf '%s' "$RESP" | jq -r '.ca // empty' 2>/dev/null || true)
       if [ -n "$NEWCA" ]; then
         if WHY=$(take_ca "$NEWCA" "$CA"); then
-          echo "argus-probe: the monitoring CA was renewed (it now ends $(ca_end "$CA")); the Zabbix proxy uses it from its next start"
+          echo "argus-probe: the monitoring CA was renewed (it now ends $(cert_end "$CA")); the Zabbix proxy uses it from its next start"
           CA_FP=$(ca_fp "$CA")
         elif [ "$WHY" != "$CA_REFUSED" ]; then
           echo "argus-probe: refusing the CA Argus handed out: $WHY" >&2
@@ -301,6 +304,18 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
       if [ -n "$CA_FP" ] && [ "$CA_FP" != "$RUN_CA_FP" ] && ! openssl x509 -in "$RUN_CA" -noout -checkend 2592000 >/dev/null 2>&1; then
         echo "argus-probe: the CA the Zabbix proxy started with ends within 30 days: restarting it on the renewed one"
         kill -TERM 1 2>/dev/null || true
+      fi
+      # The probe's own certificate (see checkin.sh): renewed thirty days before its end, tried again
+      # hourly while it fails. The proxy reads it only at start, so it restarts on the new one.
+      if [ "$(date +%s)" -ge "$CERT_NEXT_TRY" ] && ! openssl x509 -in "$CRT" -noout -checkend 2592000 >/dev/null 2>&1; then
+        CERT_NEXT_TRY=$(( $(date +%s) + 3600 ))
+        if WHY=$(renew_cert "$RENEW_URL" "$PROBE_TOKEN" "$CRT" "$KEY" "$CA"); then
+          CERT_END=$(cert_end "$CRT")
+          echo "argus-probe: certificate renewed (it now ends $CERT_END): restarting the Zabbix proxy on it"
+          kill -TERM 1 2>/dev/null || true
+        else
+          echo "argus-probe: certificate renewal failed, trying again in an hour: $WHY" >&2
+        fi
       fi
       JOB=$(printf '%s' "$RESP" | jq -c '.scan // empty' 2>/dev/null || true)
       if [ -n "$JOB" ]; then
