@@ -1,0 +1,11 @@
+[Unit]
+Description=Argus: report the OS patch status as soon as the probe has enrolled
+
+[Path]
+# The probe container writes proxy.env (the check-in token) when it enrolls: the first report goes
+# out then, not at the next hourly run of argus-os-report.timer.
+PathChanged=@STATE_DIR@/enroll/proxy.env
+Unit=argus-os-report.service
+
+[Install]
+WantedBy=multi-user.target

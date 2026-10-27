@@ -7,7 +7,8 @@ The VM patches its own Debian OS locally via unattended-upgrades (security suite
 itself in a weekly ~03:00 window. This reporter only reports: it posts the pending security-update
 count and the reboot-required flag to Argus, so the fleet view shows which sites carry CVEs or need
 a reboot, and writes the same as os-status.json into the probe's data folder, where the console menu
-reads it. Run hourly by argus-os-report.timer, and after the host tools were applied.
+reads it. Run hourly by argus-os-report.timer, after the host tools were applied, and as soon as the
+probe enrolls (argus-os-report.path watches proxy.env), so the first report doesn't wait an hour.
 
 Standard library only. Authenticated by the same long-lived probe token the enrollment wrote to
 proxy.env, so until the VM has enrolled there is nothing to post (the local file is still written).

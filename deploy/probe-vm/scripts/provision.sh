@@ -74,7 +74,7 @@ rm -f /docker/argus-probe/host-tools-apply.json
 printf '{"state":"ok","version":"image-build","at":"%s","message":"installed at image build"}
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /docker/argus-probe/host-tools.json
 chmod 0644 /docker/argus-probe/host-tools.json
-systemctl enable argus-os-report.timer argus-host-tools.path
+systemctl enable argus-os-report.timer argus-os-report.path argus-host-tools.path
 
 echo "==> configuring OS auto-patching (unattended-upgrades, security only)"
 # A probe is "cattle": patch + reboot are fully hands-off. Security suite only, auto-reboot in a weekly

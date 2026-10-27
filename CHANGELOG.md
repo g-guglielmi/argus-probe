@@ -18,6 +18,17 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r9] - 2026-10-27
+
+### Fixed
+- **A new probe VM's OS version and patch status show as soon as it enrolls**, not up to an hour
+  later. The OS reporter ran 4 minutes after boot and then hourly; on a VM set up with the seed ISO
+  its first run came before the probe had enrolled, so it had no token to report with and the
+  Probes page showed no "VM OS version" until the next run (or a reboot). A path unit now runs it
+  when the probe container writes its check-in token (`argus-os-report.path` on `proxy.env`).
+  Existing probe VMs get it from this image through the host-tools channel; the next probe-vm
+  image enables it at build.
+
 ## [probe/v7.0.32-r8] - 2026-10-27
 
 ### Added
