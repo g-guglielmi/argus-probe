@@ -22,6 +22,12 @@
 # Only on the appliances: a core installed by hand is your machine, and its guest agent is yours to
 # pick, so there this does nothing. A VM that already has a Xen agent (xe-guest-utilities from the
 # guest tools ISO, or xen-guest-agent) keeps it.
+#
+# XenServer's .deb starts its agent with a SysV init script, which systemd runs only through a
+# compatibility layer it is dropping (and warns about at every reload). XenServer's repository has
+# a native unit for it (mk/xe-linux-distribution.service) that the .deb leaves out: this installs
+# that unit, with Debian's paths, under the same name, so systemd takes it over the script, and it
+# carries the "Xen only" condition itself.
 set -u
 
 XE_VERSION=10.0.0
@@ -29,9 +35,14 @@ XE_URL="https://github.com/xenserver/xe-guest-utilities/releases/download/v${XE_
 XE_SHA256=62fa81534a6a0e762ffe40e91fe1e2f3f4850a4270304928eb4aff647a914b13
 PROBE_MARKER="${ARGUS_PROBE_DIR:-/docker/argus-probe}/host-tools.json"   # written at the probe VM's image build
 CORE_MARKER="${ARGUS_CORE_SETUP_DIR:-/var/lib/argus-core-setup}"          # the core VM's first-boot state
-XE_DROPIN="${ARGUS_XE_DROPIN:-/etc/systemd/system/xe-linux-distribution.service.d/argus.conf}"
+XE_UNIT="${ARGUS_XE_UNIT:-/etc/systemd/system/xe-linux-distribution.service}"
+XE_DROPIN="$XE_UNIT.d/argus.conf"   # what 7.0.32-r10 wrote instead of the unit; replaced by it
 
-say() { logger -t argus-guest-agent "$*" 2>/dev/null; echo "argus-guest-agent: $*"; }
+# say: to the journal; also on the terminal, unless systemd already sends the output there.
+say() {
+  logger -t argus-guest-agent "$*" 2>/dev/null
+  [ -n "${JOURNAL_STREAM:-}" ] || echo "argus-guest-agent: $*"
+}
 installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"; }
 apt_get() { DEBIAN_FRONTEND=noninteractive apt-get -q -y -o DPkg::Lock::Timeout=600 "$@"; }
 
@@ -41,8 +52,39 @@ apt_install() {
   apt_get install --no-install-recommends "$@" >/dev/null 2>&1
 }
 
-# xen_agent: xe-guest-utilities from XenServer's release, taken only with its pinned checksum. Its init
-# script fails outside Xen, so a drop-in keeps systemd from starting it anywhere else.
+# xe_unit: XenServer's own unit for its agent, with Debian's paths; returns 0 when it was written
+# (new, or different), 1 when it was already in place.
+xe_unit() {
+  local want
+  want="$(printf '%s\n' \
+    '# Installed by argus-guest-agent: XenServer'"'"'s own unit for xe-guest-utilities' \
+    '# (mk/xe-linux-distribution.service in its repository), which its .deb leaves out.' \
+    '[Unit]' \
+    'Description=Xen guest agent (xe-guest-utilities)' \
+    'ConditionVirtualization=xen' \
+    'After=network-online.target' \
+    'Wants=network-online.target' \
+    '' \
+    '[Service]' \
+    'ExecStartPre=/usr/sbin/xe-linux-distribution /var/cache/xe-linux-distribution' \
+    'ExecStart=/usr/sbin/xe-daemon' \
+    '' \
+    '[Install]' \
+    'WantedBy=multi-user.target')"
+  if [ "$(cat "$XE_UNIT" 2>/dev/null)" = "$want" ] && [ ! -e "$XE_DROPIN" ]; then
+    return 1
+  fi
+  install -d -m 0755 "$(dirname "$XE_UNIT")"
+  printf '%s\n' "$want" > "$XE_UNIT"
+  rm -f "$XE_DROPIN"
+  rmdir "$XE_UNIT.d" 2>/dev/null
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable xe-linux-distribution.service >/dev/null 2>&1 || true
+  return 0
+}
+
+# xen_agent: xe-guest-utilities from XenServer's release, taken only with its pinned checksum, run by
+# its native unit (xe_unit).
 xen_agent() {
   local tmp ok=1
   if ! { installed xe-guest-utilities || installed xen-guest-agent || command -v xe-daemon || command -v xen-guest-agent; } >/dev/null 2>&1; then
@@ -56,10 +98,8 @@ xen_agent() {
     fi
     rm -rf "$tmp"
   fi
-  if installed xe-guest-utilities && [ ! -s "$XE_DROPIN" ]; then
-    install -d -m 0755 "$(dirname "$XE_DROPIN")"
-    printf '# argus-guest-agent: only a Xen VM has the xenstore it writes to.\n[Unit]\nConditionVirtualization=xen\n' > "$XE_DROPIN"
-    systemctl daemon-reload 2>/dev/null || true
+  if installed xe-guest-utilities && xe_unit; then
+    XE_UNIT_CHANGED=1
   fi
   [ "$ok" = 1 ]
 }
@@ -108,6 +148,7 @@ case "$virt" in
 esac
 # Lists before and after: a run that changes nothing says nothing.
 before="$(dpkg-query -W -f='${Package} ${Status}\n' xe-guest-utilities open-vm-tools qemu-guest-agent hyperv-daemons 2>/dev/null | grep 'install ok installed')"
+XE_UNIT_CHANGED=0
 if ! agent_for "$virt"; then
   say "the guest agent for $virt did not install; trying again in an hour"
   exit 1
@@ -115,5 +156,11 @@ fi
 after="$(dpkg-query -W -f='${Package} ${Status}\n' xe-guest-utilities open-vm-tools qemu-guest-agent hyperv-daemons 2>/dev/null | grep 'install ok installed')"
 if [ "$before" != "$after" ]; then
   say "installed the guest agent for $virt ($(printf '%s\n' "$after" | cut -d' ' -f1 | paste -sd, -))"
+fi
+# The agent the SysV script started moves to the native unit (same name, so the restart stops the
+# old process and starts the unit's).
+if [ "$XE_UNIT_CHANGED" = 1 ] && [ "$virt" = xen ]; then
+  systemctl restart xe-linux-distribution.service >/dev/null 2>&1 || true
+  [ "$before" = "$after" ] && say "xe-guest-utilities now runs from its native systemd unit"
 fi
 exit 0

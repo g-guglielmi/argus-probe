@@ -18,6 +18,23 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r11] - 2026-10-28
+
+### Changed
+- **Xen's guest agent runs from XenServer's own systemd unit.** xe-guest-utilities' .deb starts it
+  with a SysV init script, which systemd runs only through a compatibility layer it is dropping
+  ("This compatibility logic is deprecated, expect removal soon" on the console at every reload).
+  `argus-guest-agent` now installs the native unit from XenServer's repository
+  (`mk/xe-linux-distribution.service`, with Debian's paths and `ConditionVirtualization=xen`) under
+  the same name, replaces r10's drop-in with it and moves the running agent over.
+- **Only kernel errors on the probe VM's console** (`argus-console-quiet`, a host tool). The VM
+  boots without "quiet", so the kernel printed every informational line (the containers' network
+  ports, systemd's notes) over the console menu; now only errors reach the screen and the rest stays
+  in the journal.
+
+### Fixed
+- `argus-guest-agent` wrote each line to the journal twice when systemd ran it.
+
 ## [probe-vm/v0.3.8] - 2026-10-28
 
 The VM image with every hypervisor's guest agent. It is what a new probe VM boots from; a probe VM

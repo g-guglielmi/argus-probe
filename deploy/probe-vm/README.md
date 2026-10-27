@@ -72,8 +72,8 @@ unchanged. The menu is `argus-console`, the same file as the core's (argus-core,
 
 ## Host tools: the VM's scripts follow the probe release
 
-The VM's host side (`argus-os-report`, the console menu and its login wrapper, their systemd
-units, the apply script) lives in `host/` with a `manifest`, and the probe image carries that folder
+The VM's host side (`argus-os-report`, the console menu and its login wrapper, the guest agent
+installer, the quiet console, their systemd units, the apply script) lives in `host/` with a `manifest`, and the probe image carries that folder
 as `/host-tools`. The image build installs it on the VM (`install-host-tools.py --root /`) and
 writes `host-tools.json` into `/docker/argus-probe`, the sign of a probe VM. From then on the
 argus-updater sidecar (0.2.17 and later) runs the probe image once after each probe update, and

@@ -13,5 +13,6 @@ argus-os-report.service      /etc/systemd/system/argus-os-report.service        
 argus-os-report.timer        /etc/systemd/system/argus-os-report.timer            0644 enable
 argus-os-report.path         /etc/systemd/system/argus-os-report.path             0644 render enable
 argus-guest-agent.service    /etc/systemd/system/argus-guest-agent.service        0644 enable
+argus-console-quiet.service  /etc/systemd/system/argus-console-quiet.service      0644 enable
 argus-host-tools.service     /etc/systemd/system/argus-host-tools.service         0644 render
 argus-host-tools.path        /etc/systemd/system/argus-host-tools.path            0644 render enable

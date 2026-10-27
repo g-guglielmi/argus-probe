@@ -1,0 +1,19 @@
+[Unit]
+Description=Argus: only kernel errors on the console, so the console menu stays readable
+# Only on the appliances (a probe VM, the core VM): a core installed by hand keeps its own settings.
+ConditionPathExists=|/docker/argus-probe/host-tools.json
+ConditionPathExists=|/var/lib/argus-core-setup
+DefaultDependencies=no
+After=systemd-sysctl.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+# The kernel's console log level 4: emergencies, alerts, critical messages and errors reach the
+# console; the rest (the containers' network ports, systemd's notes) goes to the journal only, like
+# everything else. The VM boots without "quiet", so the default level sent them all to the screen.
+ExecStart=/bin/sh -c 'echo 4 > /proc/sys/kernel/printk'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
