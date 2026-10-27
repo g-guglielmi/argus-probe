@@ -123,11 +123,16 @@ packer build argus-probe-vm.pkr.hcl        # -> output/argus-probe-vm.qcow2
 
 **Import the disk.** Pick the format for your hypervisor:
 
-- **VMware / Nutanix / VirtualBox:** import `argus-probe-vm.ova` directly.
-- **XCP-NG / Xen Orchestra:** either import `argus-probe-vm.ova` (**Import → OVA** - creates a
-  ready-to-run VM), or `gunzip argus-probe-vm.vhd.gz` and upload the `.vhd` as a VDI (Xen Orchestra →
-  Import, or `xe vdi-import`), then create a VM (1-2 vCPU, 2 GB RAM) and attach it as the boot disk.
-- **KVM / libvirt:** `argus-probe-vm.qcow2` imports directly; the `.vhd` also imports on Hyper-V.
+- **VMware / VirtualBox:** import `argus-probe-vm.ova` directly.
+- **XCP-ng / XenServer:** import `argus-probe-vm.ova` (Xen Orchestra **Import → OVA**, or XenCenter
+  **Import**) - it creates a ready-to-run VM. Or `gunzip argus-probe-vm.vhd.gz` and upload the `.vhd`
+  as a VDI (Xen Orchestra → Import, or `xe vdi-import`), then create a VM (1-2 vCPU, 2 GB RAM) and
+  attach it as the boot disk.
+- **Nutanix AHV:** `argus-probe-vm.qcow2` (AHV is KVM, qcow2 is its own disk format). Upload it in
+  Prism's **Image Configuration** as a *Disk* image and the seed ISO as an *ISO* image, then create
+  a VM (1-2 vCPU, 2 GB RAM, legacy BIOS) with a disk *cloned from the image* and a CD-ROM from the ISO.
+- **KVM / libvirt / Proxmox:** `argus-probe-vm.qcow2` imports directly.
+- **Hyper-V:** `gunzip argus-probe-vm.vhd.gz`, then a Generation 1 VM on the `.vhd`.
 
 **Give it the enrollment inputs** - either way (in Argus **Add probe → VM**, which also has the
 keyboard-layout picker):
