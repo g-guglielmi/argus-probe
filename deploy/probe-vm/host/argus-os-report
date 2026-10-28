@@ -56,9 +56,21 @@ def sec_updates():
     return n
 
 
-def os_pretty_name():
-    """The OS pretty-name from /etc/os-release (e.g. "Debian GNU/Linux 13 (trixie)"), "" if unreadable."""
-    return read_kv("/etc/os-release").get("PRETTY_NAME", "").strip().strip('"')
+def os_name(release="/etc/os-release", debian="/etc/debian_version"):
+    """The OS as Argus shows it: Debian with its point release ("Debian 13.7", from DEBIAN_VERSION_FULL,
+    or /etc/debian_version before Debian 13 added it), anything else by its PRETTY_NAME. "" if unreadable."""
+    kv = {k: v.strip('"').strip("'") for k, v in read_kv(release).items()}
+    if kv.get("ID") == "debian":
+        v = kv.get("DEBIAN_VERSION_FULL", "")
+        if not v:
+            try:
+                with open(debian, encoding="utf-8") as fh:
+                    v = fh.read().strip()
+            except OSError:
+                pass
+        if re.fullmatch(r"[0-9][0-9.]*", v):  # testing and sid read "forky/sid": those keep the pretty name
+            return "Debian " + v
+    return kv.get("PRETTY_NAME", "")
 
 
 def write_status(status):
@@ -78,7 +90,7 @@ def main():
     status = {
         "sec_updates": sec_updates(),
         "reboot_required": os.path.exists("/var/run/reboot-required"),
-        "os": os_pretty_name(),
+        "os": os_name(),
         "reported_at": int(time.time()),
     }
     write_status(status)

@@ -93,9 +93,9 @@ patch and the reboot are hands-off.
   affected services after a libc/openssl bump, so most updates need no reboot at all.
 - When a reboot *is* required, the VM reboots itself in a **weekly ~03:00 window**
   (`Automatic-Reboot-Time`). Probes buffer 7 days offline, so a ~60 s reboot is invisible.
-- **`argus-os-report.timer`** posts the VM's pending **security-update count** and **reboot-required**
-  flag to Argus hourly (`POST /api/probes/os-status`, probe-token auth), so the **Probes** page's **OS**
-  column shows which sites carry CVEs or are waiting on their reboot window, and keeps the same as
+- **`argus-os-report.timer`** posts the VM's pending **security-update count**, **reboot-required**
+  flag and OS name (Debian by its point release, "Debian 13.7") to Argus hourly
+  (`POST /api/probes/os-status`, probe-token auth), so the **Probes** page's **VM OS** column shows which sites carry CVEs or are waiting on their reboot window, and keeps the same as
   `os-status.json` in `/docker/argus-probe` for the console menu. It only *reports* - Argus never
   runs `apt` remotely (no clean rollback); the hypervisor snapshot is the safety net.
 

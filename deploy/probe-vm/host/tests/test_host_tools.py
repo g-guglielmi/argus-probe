@@ -68,6 +68,38 @@ class ManifestTest(unittest.TestCase):
             py_compile.compile(os.path.join(HOST, name), doraise=True)
 
 
+# (os-release, /etc/debian_version or None, the name Argus shows). Debian by its point release, from
+# DEBIAN_VERSION_FULL (Debian 13 on) or debian_version (before); anything else by its PRETTY_NAME.
+DEBIAN_13 = ('PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nNAME="Debian GNU/Linux"\nVERSION_ID="13"\n'
+             'VERSION="13 (trixie)"\nVERSION_CODENAME=trixie\nDEBIAN_VERSION_FULL=13.7\nID=debian\n')
+OS_NAMES = [
+    (DEBIAN_13, "13.7", "Debian 13.7"),
+    (DEBIAN_13, None, "Debian 13.7"),
+    ('PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nVERSION_ID="12"\nID=debian\n', "12.12\n", "Debian 12.12"),
+    ('PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nVERSION_ID="12"\nID=debian\n', None, "Debian GNU/Linux 12 (bookworm)"),
+    ('PRETTY_NAME="Debian GNU/Linux forky/sid"\nID=debian\n', "forky/sid\n", "Debian GNU/Linux forky/sid"),
+    ('PRETTY_NAME="Ubuntu 24.04.3 LTS"\nVERSION_ID="24.04"\nID=ubuntu\nID_LIKE=debian\n', "trixie/sid\n", "Ubuntu 24.04.3 LTS"),
+    (None, None, ""),
+]
+
+
+class OSReportTest(unittest.TestCase):
+    def test_debian_is_named_by_its_point_release(self):
+        loader = importlib.machinery.SourceFileLoader("argus_os_report", os.path.join(HOST, "argus-os-report"))
+        spec = importlib.util.spec_from_loader("argus_os_report", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        for i, (release, debian, want) in enumerate(OS_NAMES):
+            rel, deb = os.path.join(tmp, "os-release-%d" % i), os.path.join(tmp, "debian_version-%d" % i)
+            for path, text in ((rel, release), (deb, debian)):
+                if text is not None:
+                    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                        fh.write(text)
+            self.assertEqual(mod.os_name(rel, deb), want, release)
+
+
 class InstallerTest(unittest.TestCase):
     def setUp(self):
         self.mod = load_installer()

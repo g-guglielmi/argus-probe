@@ -18,6 +18,14 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r12] - 2026-10-28
+
+### Changed
+- **A probe VM reports Debian by its point release: "Debian 13.7", not "Debian 13 (trixie)".** The
+  OS reporter (a host tool, so it reaches every probe VM with this release) reads os-release's
+  `DEBIAN_VERSION_FULL`, or `/etc/debian_version` on Debian before 13; any other OS keeps its
+  `PRETTY_NAME`. Argus shows it on the Probes and Updates pages from the next hourly report.
+
 ## [probe/v7.0.32-r11] - 2026-10-28
 
 ### Changed
