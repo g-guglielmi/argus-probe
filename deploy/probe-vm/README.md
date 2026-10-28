@@ -78,8 +78,9 @@ as `/host-tools`. The image build installs it on the VM (`install-host-tools.py 
 writes `host-tools.json` into `/docker/argus-probe`, the sign of a probe VM. From then on the
 argus-updater sidecar (0.2.17 and later) runs the probe image once after each probe update, and
 daily, with `/usr/local/sbin`, `/etc/systemd/system` and the data folder bound, and the installer
-writes what changed; `argus-host-tools.path` reloads systemd when a unit changed. The outcome goes
-to Argus in the sidecar's check-in and shows on the Probes page beside the OS status. A change to
+writes what changed; when anything changed, `argus-host-tools.path` reloads systemd and runs the OS
+reporter at once. The outcome goes to Argus in the sidecar's check-in and shows on the Updates page
+(the probe's Host tools row) and, while updating or failed, on the Probes page. A change to
 `host/**` is a probe release like any image change (DESIGN 14c in argus-core). A probe VM built
 before this (no `host-tools.json`) keeps its files as they are until it is re-imaged; writing that
 file by hand opts it in.

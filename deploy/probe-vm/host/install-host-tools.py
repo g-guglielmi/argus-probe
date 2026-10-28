@@ -7,8 +7,9 @@ The probe image carries this folder as /host-tools (labelled io.argus.host-tools
 update the argus-updater runs the image once, as root with the host's /usr/local/sbin and
 /etc/systemd/system bound under --root and the probe's data folder at --update-dir, and this writes
 the files that changed. The same script runs at image build on the VM itself (--root /). A container
-cannot reload systemd: when a systemd file changed this drops host-tools-apply.json in the update
-dir and argus-host-tools.path on the host runs argus-host-tools-apply (reload, enable, re-report).
+cannot reload systemd or run the reporter: when any file changed this drops host-tools-apply.json in
+the update dir and argus-host-tools.path on the host runs argus-host-tools-apply (reload, enable,
+re-report), so a new reporter or unit takes effect at once, not at the next hourly report.
 
 Manifest lines: SOURCE DEST MODE [render] [enable]. render substitutes @STATE_DIR@ (the host path of
 the probe's data folder) in the file; enable lists the unit for the host to `systemctl enable --now`.
@@ -62,7 +63,7 @@ def read_bytes(path):
 def install(src, root, state_dir, update_dir, version, now=None):
     """Write every manifest entry under root, a file only when its content or mode differs (to a
     temporary name, then renamed over, so nothing on the host ever reads half a script), and drop the
-    reload marker in update_dir when a systemd file changed. Returns the summary."""
+    reload marker in update_dir when any file changed. Returns the summary."""
     try:
         entries = parse_manifest(read_bytes(os.path.join(src, "manifest")).decode("utf-8"))
     except OSError:
@@ -110,7 +111,7 @@ def install(src, root, state_dir, update_dir, version, now=None):
             summary["units_changed"].append(os.path.basename(e["dest"]))
     for k in ("installed", "unchanged", "units_changed"):
         summary[k].sort()
-    if summary["units_changed"]:
+    if summary["installed"]:
         marker = {"at": int(now if now is not None else time.time()), "version": version,
                   "enable": " ".join(enable), "changed": " ".join(summary["units_changed"])}
         final = os.path.join(update_dir, APPLY_FILE)

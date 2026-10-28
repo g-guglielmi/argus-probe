@@ -4,10 +4,10 @@
 
 # argus-host-tools-apply - the last step of a host tools update on a probe VM (DESIGN 14c). The probe
 # image carries the VM's host scripts and units; after each probe update the argus-updater writes
-# them to the host (install-host-tools.py), and a container cannot reload systemd, so it drops
-# host-tools-apply.json in the probe's data folder and argus-host-tools.path starts this: reload,
-# enable what the marker lists (every timer and path unit of the manifest), re-report. Local, never
-# remote.
+# them to the host (install-host-tools.py), and a container cannot reload systemd, so when any file
+# changed it drops host-tools-apply.json in the probe's data folder and argus-host-tools.path starts
+# this: reload, enable what the marker lists (every timer and path unit of the manifest), re-report
+# (so a new reporter shows at once). Local, never remote.
 set -u
 DIR="${ARGUS_STATE_DIR:-/docker/argus-probe}"
 REQ="$DIR/host-tools-apply.json"

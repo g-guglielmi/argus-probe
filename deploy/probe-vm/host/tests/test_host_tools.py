@@ -3,7 +3,7 @@
 # Copyright (C) 2026 g-guglielmi
 """Tests for the probe VM's host-tools folder: the installer writes what the manifest says, only when
 it changed, with the modes it says, renders the data folder into the units, drops the reload marker
-when a systemd file changed, and the manifest matches the folder. Standard library; runs anywhere
+when any file changed, and the manifest matches the folder. Standard library; runs anywhere
 (CI runs it before the image is built)."""
 import importlib.machinery
 import importlib.util
@@ -151,15 +151,18 @@ class InstallerTest(unittest.TestCase):
         self.assertFalse(s["apply"])
         self.assertFalse(os.path.exists(os.path.join(self.update, "host-tools-apply.json")))
 
-    def test_a_changed_script_is_rewritten_without_a_marker(self):
+    def test_a_changed_script_drops_the_marker_so_the_host_re_reports(self):
         self.install()
         os.remove(os.path.join(self.update, "host-tools-apply.json"))
         self.write("tool", "#!/bin/sh\necho bye\n")
         s = self.install()
         self.assertEqual(s["installed"], ["/usr/local/sbin/tool"])
         self.assertEqual(s["units_changed"], [])
-        self.assertFalse(s["apply"])
+        self.assertTrue(s["apply"], "a new reporter must run now, not at its next hourly tick")
         self.assertEqual(self.read("usr/local/sbin/tool"), "#!/bin/sh\necho bye\n")
+        with open(os.path.join(self.update, "host-tools-apply.json"), encoding="utf-8") as fh:
+            marker = json.load(fh)
+        self.assertEqual(marker, {"at": 1700000000, "version": "7.0.33-r1", "enable": "unit.timer", "changed": ""})
 
     def test_a_missing_source_or_manifest_is_an_error(self):
         self.write("manifest", "ghost /usr/local/sbin/ghost 0755\n")

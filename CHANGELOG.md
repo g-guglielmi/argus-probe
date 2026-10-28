@@ -18,6 +18,14 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r13] - 2026-10-28
+
+### Changed
+- **A probe VM reports right after its host tools change.** The VM re-ran its OS report straight
+  after an install only when a systemd unit had changed; a new reporter alone waited for the next
+  hourly run, so r12's "Debian 13.7" took up to an hour to show. Now any file the sidecar writes
+  makes the VM reload and report at once, as the core VM already does.
+
 ## [probe/v7.0.32-r12] - 2026-10-28
 
 ### Changed
