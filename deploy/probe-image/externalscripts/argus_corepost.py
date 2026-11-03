@@ -75,7 +75,10 @@ def post_once(url, token, data, timeout):
         try:
             conn.request("POST", (u.path or "/") + ("?" + u.query if u.query else ""), body=data, headers=headers)
             resp = conn.getresponse()
-            body = resp.read(300)
+            try:
+                body = resp.read(300)
+            finally:
+                resp.close()  # it holds the socket open past conn.close() otherwise
         finally:
             conn.close()
     except Exception as e:
