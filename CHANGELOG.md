@@ -18,6 +18,15 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r16] - 2026-11-03
+
+### Fixed
+- **A diagnostic ping reads its replies.** The image's `ping` is iputils (the Zabbix base image
+  installs it over busybox's), whose reply lines say `icmp_seq=1`; the diagnostic only read
+  busybox's `seq=0`, so every answered ping showed "no reply within 1 s", 100 % lost, while a
+  traceroute to the same target got through. Both formats read now, and a ping that cannot run at
+  all (exit 2, a socket it may not open) says why instead of passing for a lost reply.
+
 ## [probe/v7.0.32-r15] - 2026-11-03
 
 ### Fixed

@@ -116,20 +116,33 @@ def ms_str(v):
 
 # --- ping ---
 
-PING_TIME = re.compile(r"from ([0-9.]+): seq=\d+ ttl=\d+ time=([0-9.]+) ms")
+# The image's ping is iputils (the Zabbix base image installs it over busybox's): "64 bytes from
+# 10.0.0.20: icmp_seq=1 ttl=64 time=0.412 ms". Busybox's "seq=0" reads the same.
+PING_TIME = re.compile(r"from (?:\S+ \()?([0-9.]+)\)?: (?:icmp_)?seq=\d+ ttl=\d+ time=([0-9.]+) ms")
 
 
 def ping_raw(target, addr, replies, done):
     lines = ["PING %s (%s): 56 data bytes" % (target, addr)]
     got = [r["ms"] for r in replies if "ms" in r]
     for r in replies:
-        lines.append("64 bytes from %s: seq=%d time=%s" % (r["from"], r["seq"], ms_str(r["ms"])) if "ms" in r else "no reply for seq=%d" % r["seq"])
+        if "ms" in r:
+            lines.append("64 bytes from %s: seq=%d time=%s" % (r["from"], r["seq"], ms_str(r["ms"])))
+        elif r.get("error"):
+            lines.append("ping failed for seq=%d: %s" % (r["seq"], r["error"]))
+        else:
+            lines.append("no reply for seq=%d" % r["seq"])
     if done and replies:
         lines += ["", "--- %s ping statistics ---" % target,
                   "%d packets transmitted, %d packets received, %d%% packet loss" % (len(replies), len(got), (len(replies) - len(got)) * 100 // len(replies))]
         if got:
             lines.append("round-trip min/avg/max = %.3f/%.3f/%.3f ms" % (min(got), sum(got) / len(got), max(got)))
     return "\n".join(lines) + "\n"
+
+
+def error_line(text):
+    """The last non-empty line of a tool's stderr, kept short."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return lines[-1][:160] if lines else ""
 
 
 def run_ping(req, progress):
@@ -140,11 +153,17 @@ def run_ping(req, progress):
         start = time.monotonic()
         rep = {"seq": seq}
         try:
-            out = subprocess.run(["ping", "-c", "1", "-W", "1", addr], capture_output=True, text=True, timeout=5).stdout
-            m = PING_TIME.search(out)
+            p = subprocess.run(["ping", "-c", "1", "-W", "1", addr], capture_output=True, text=True, timeout=5)
+            m = PING_TIME.search(p.stdout)
             if m:
                 rep["from"], rep["ms"] = m.group(1), float(m.group(2))
-        except (OSError, subprocess.TimeoutExpired):
+            elif p.returncode > 1 or (p.returncode != 0 and p.stderr.strip()):
+                # Not a lost reply: ping itself could not run (exit 2, a socket it may not open). Saying
+                # so keeps an error from reading like a filter dropping the packets.
+                rep["error"] = error_line(p.stderr) or "ping exited with %d" % p.returncode
+        except OSError as e:
+            rep["error"] = str(e)
+        except subprocess.TimeoutExpired:
             pass
         res["ping"]["replies"].append(rep)
         res["raw"] = ping_raw(req["target"], addr, res["ping"]["replies"], False)

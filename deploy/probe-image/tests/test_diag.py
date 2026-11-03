@@ -62,6 +62,17 @@ class Ping(unittest.TestCase):
         m = diag.PING_TIME.search("PING 10.0.0.20 (10.0.0.20): 56 data bytes\n64 bytes from 10.0.0.20: seq=0 ttl=64 time=0.412 ms\n")
         self.assertEqual((m.group(1), m.group(2)), ("10.0.0.20", "0.412"))
 
+    def test_reads_iputils_reply_line(self):
+        # The image's ping: the Zabbix base image installs iputils over busybox.
+        m = diag.PING_TIME.search("PING 10.0.0.20 (10.0.0.20) 56(84) bytes of data.\n64 bytes from 10.0.0.20: icmp_seq=1 ttl=57 time=13.1 ms\n")
+        self.assertEqual((m.group(1), m.group(2)), ("10.0.0.20", "13.1"))
+        m = diag.PING_TIME.search("64 bytes from one.example.lan (10.0.0.20): icmp_seq=1 ttl=57 time=13.1 ms\n")
+        self.assertEqual((m.group(1), m.group(2)), ("10.0.0.20", "13.1"))
+
+    def test_an_error_is_not_a_lost_reply(self):
+        raw = diag.ping_raw("10.0.0.20", "10.0.0.20", [{"seq": 0, "error": "ping: socket: Operation not permitted"}], True)
+        self.assertIn("ping failed for seq=0: ping: socket: Operation not permitted", raw)
+
 
 def name_bytes(n):
     return b"".join(bytes([len(p)]) + p.encode() for p in n.split(".")) + b"\x00"
