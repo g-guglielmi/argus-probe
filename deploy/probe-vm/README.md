@@ -101,7 +101,7 @@ patch and the reboot are hands-off.
 - **`unattended-upgrades`** applies the **security suite only**, automatically. `needrestart` restarts
   affected services after a libc/openssl bump, so most updates need no reboot at all.
 - When a reboot *is* required, the VM reboots itself in its **reboot window**: the fleet's, set on
-  Argus's **Updates** page next to the fleet target (every day at 03:00 by default), or one of its
+  Argus's **Updates** page under the probes' image channel (every day at 03:00 by default), or one of its
   own from the probe's **⋮ > Reboot window…**; or never by itself (notify only). The window reads
   on the core's clock, whatever time zone the VM runs. Argus hands it over at the probe's check-in,
   the proxy container keeps it as `reboot-window.json` in `/docker/argus-probe`, and
