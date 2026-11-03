@@ -55,6 +55,14 @@ password login is allowed for this one account only, never for root or anything 
 all). The password is cached root-only on the VM and the report is retried until it lands, so a
 brief core outage during enrollment doesn't lose it.
 
+**Docker commands take `sudo`.** The account is in the `sudo` group and deliberately *not* in
+`docker`: membership of `docker` is root without a password (one `docker run` that mounts the host
+is enough), and it would bypass the password and the log that `sudo` keeps. So from the shell it is
+`sudo docker ps`, `sudo docker logs argus-probe`, `sudo docker exec -i argus-probe ...`; a plain
+`docker` command answers "permission denied ... docker.sock" (and piped into `grep`, that answer
+is filtered away and the output just looks empty). The console menu's **View logs** shows the
+latest of the probe's, the updater's and the host tools' logs without a password.
+
 The **console keyboard layout** is configurable per-VM (it matters for typing that password at the
 console): pick it in Add-probe → **VM**, or on the first-boot setup page. It's written to
 `/etc/vconsole.conf` on first boot; the default is `us`.
