@@ -77,6 +77,22 @@ def os_name(release="/etc/os-release", debian="/etc/debian_version"):
     return kv.get("PRETTY_NAME", "")
 
 
+def lan(run=subprocess.run):
+    """This VM's LAN address and gateway: the source address and next hop of its route to the
+    internet (ip -j route get), {} when there is none. The probe container runs on Docker's bridge
+    and sees only its own 172.17.x address, so the Probes page takes the VM's from here."""
+    try:
+        out = run(["ip", "-j", "-4", "route", "get", "1.1.1.1"], capture_output=True, text=True,
+                  timeout=5, check=False).stdout
+        r = json.loads(out)[0]
+    except (OSError, ValueError, IndexError, KeyError, TypeError, subprocess.SubprocessError):
+        return {}
+    if not isinstance(r, dict) or not isinstance(r.get("prefsrc"), str) or not r["prefsrc"]:
+        return {}
+    gw = r.get("gateway")
+    return {"ip": r["prefsrc"], "gw": gw if isinstance(gw, str) else ""}
+
+
 def booted_at(stat="/proc/stat"):
     """When this VM booted (unix seconds), 0 if unreadable."""
     try:
@@ -129,6 +145,9 @@ def main():
         r = last_result(kind + "-result.json")
         if r:
             status[kind] = r
+    addr = lan()
+    if addr:
+        status["lan"] = addr
     write_status(status)
     env = read_kv(META)
     token, checkin = env.get("PROBE_TOKEN", ""), env.get("CHECKIN_URL", "")
@@ -136,7 +155,7 @@ def main():
         return 0  # not enrolled yet - nothing to post
     url = checkin.rsplit("/", 1)[0] + "/os-status"  # .../api/probes/checkin -> .../api/probes/os-status
     body = json.dumps({k: status[k] for k in ("sec_updates", "reboot_required", "os", "reboot_now", "patch_now",
-                                              "booted_at", "reboot", "patch") if k in status}).encode("utf-8")
+                                              "booted_at", "reboot", "patch", "lan") if k in status}).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"Authorization": "Bearer " + token,
                                           "Content-Type": "application/json"})

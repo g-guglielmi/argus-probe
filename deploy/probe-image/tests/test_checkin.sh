@@ -66,6 +66,30 @@ check "ca reported" "$B" "$base and .ca == \"ab12\""
 B=$(checkin_body 7.0.31-r29 "$PROCS" "" "")
 check "no ca" "$B" "$base and (has(\"ca\") | not)"
 
+# The addresses: the own one every report, the public one only after a lookup.
+B=$(checkin_body 7.0.31-r29 "$PROCS" "" "ab12" "2031-08-10 08:23:27Z" "172.17.0.2" "203.0.113.10")
+check "addresses reported" "$B" "$base and .ip == \"172.17.0.2\" and .public_ip == \"203.0.113.10\" and .ca == \"ab12\""
+B=$(checkin_body 7.0.31-r29 "$PROCS" "" "" "" "172.17.0.2" "")
+check "no public lookup this time" "$B" "$base and .ip == \"172.17.0.2\" and (has(\"public_ip\") | not)"
+B=$(checkin_body 7.0.31-r29 "$PROCS" "" "" "" "" "")
+check "no addresses" "$B" "$base and (has(\"ip\") | not) and (has(\"public_ip\") | not)"
+
+# public_ip keeps only an address from the trace.
+curl() { printf 'fl=123\nh=1.1.1.1\nip=203.0.113.10\nts=1.2\n'; }
+check "public lookup" "{\"ip\":\"$(public_ip)\"}" '.ip == "203.0.113.10"'
+curl() { printf '<html>blocked</html>\n'; }
+check "public lookup blocked" "{\"ip\":\"$(public_ip)\"}" '.ip == ""'
+curl() { return 7; }
+check "public lookup offline" "{\"ip\":\"$(public_ip)\"}" '.ip == ""'
+unset -f curl
+
+# own_ip reads the source address of the route (busybox and iproute2 print it the same way).
+ip() { printf '1.1.1.1 via 172.17.0.1 dev eth0  src 172.17.0.2 \n'; }
+check "own address" "{\"ip\":\"$(own_ip)\"}" '.ip == "172.17.0.2"'
+ip() { return 2; }
+check "no route" "{\"ip\":\"$(own_ip)\"}" '.ip == ""'
+unset -f ip
+
 # take_ca: only a renewal of the CA the probe trusts replaces its ca.crt.
 # expect NAME CONDITION - a shell condition that must hold.
 expect() {

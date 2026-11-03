@@ -100,6 +100,40 @@ class OSReportTest(unittest.TestCase):
             self.assertEqual(mod.os_name(rel, deb), want, release)
 
 
+class LANTest(unittest.TestCase):
+    """The VM's LAN address and gateway come from ip -j route get; anything else reads as none."""
+
+    def setUp(self):
+        loader = importlib.machinery.SourceFileLoader("argus_os_report", os.path.join(HOST, "argus-os-report"))
+        spec = importlib.util.spec_from_loader("argus_os_report", loader)
+        self.mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(self.mod)
+
+    def lan(self, stdout=None, exc=None):
+        class Out:
+            pass
+
+        def run(*a, **kw):
+            if exc:
+                raise exc
+            o = Out()
+            o.stdout = stdout
+            return o
+        return self.mod.lan(run)
+
+    def test_the_route_gives_address_and_gateway(self):
+        out = '[{"dst":"1.1.1.1","gateway":"10.0.1.1","dev":"ens18","prefsrc":"10.0.1.20","flags":[],"uid":0,"cache":[]}]'
+        self.assertEqual(self.lan(out), {"ip": "10.0.1.20", "gw": "10.0.1.1"})
+
+    def test_a_direct_route_has_no_gateway(self):
+        self.assertEqual(self.lan('[{"dst":"1.1.1.1","dev":"ens18","prefsrc":"10.0.1.20"}]'), {"ip": "10.0.1.20", "gw": ""})
+
+    def test_no_route_or_no_ip_reads_as_none(self):
+        for out in ("", "[]", "{}", "not json", '[{"dst":"1.1.1.1"}]', '[{"prefsrc":5}]', '["x"]'):
+            self.assertEqual(self.lan(out), {}, out)
+        self.assertEqual(self.lan(exc=FileNotFoundError("ip")), {})
+
+
 class InstallerTest(unittest.TestCase):
     def setUp(self):
         self.mod = load_installer()

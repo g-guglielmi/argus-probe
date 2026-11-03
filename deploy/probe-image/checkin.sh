@@ -33,6 +33,22 @@ cpu_json() {
   printf '{"count":%s,"quota":%s,"load":[%s,%s,%s]}' "$_cpus" "$_quota" "$_l1" "$_l5" "$_l15"
 }
 
+# --- the probe's addresses ---
+# The Probes page shows each probe's LAN and public address (core probeaddrs.go). The report carries
+# the address this container reaches out from (on Docker's bridge a 172.17.x one; Argus then shows the
+# address it sees the report come from, the host's) and, after each lookup, the public one.
+
+# own_ip - the source address of this container's route to the internet; empty if unknown.
+own_ip() { ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }'; }
+
+# public_ip - this probe's public IPv4 address as Cloudflare's trace sees it: one HTTPS call to
+# 1.1.1.1, no name to resolve. Empty on any failure. The loop asks every half hour and when own_ip
+# changes, not every minute.
+public_ip() {
+  curl -4 -sS -m 8 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | sed -n 's/^ip=//p' | head -n 1 \
+    | grep -E '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' || true
+}
+
 # json_ok TEXT - TEXT is one JSON value jq can read.
 json_ok() { [ -n "$1" ] && printf '%s' "$1" | jq -e 'true' >/dev/null 2>&1; }
 
@@ -41,15 +57,18 @@ json_ok() { [ -n "$1" ] && printf '%s' "$1" | jq -e 'true' >/dev/null 2>&1; }
 # nothing at all, which is what emptied every report from r8 to r28.)
 pinned_json() { jq -nc --arg p "$1" '$p | split(" ") | map(select(length > 0))'; }
 
-# checkin_body VERSION PROCS_JSON PINNED_NAMES [CA_FINGERPRINT] [CERT_END] - the minute report,
-# always a JSON object. The CA's fingerprint and the certificate's end are left out when unknown.
+# checkin_body VERSION PROCS_JSON PINNED_NAMES [CA_FINGERPRINT] [CERT_END] [OWN_IP] [PUBLIC_IP] - the
+# minute report, always a JSON object. The CA's fingerprint, the certificate's end and the addresses
+# are left out when unknown (the public one is there only right after a lookup).
 checkin_body() {
   _procs=$2; json_ok "$_procs" || _procs=null
   _pinned=$(pinned_json "$3" 2>/dev/null || true); json_ok "$_pinned" || _pinned=null
   _cpu=$(cpu_json 2>/dev/null || true); json_ok "$_cpu" || _cpu=null
   jq -nc --arg v "$1" --argjson procs "$_procs" --argjson pinned "$_pinned" --argjson cpu "$_cpu" --arg ca "${4:-}" --arg end "${5:-}" \
+    --arg ip "${6:-}" --arg pub "${7:-}" \
     '{version:$v, scans:true, sweeps:true, diags:true, procs:$procs, procs_pinned:$pinned, cpu:$cpu}
-     + (if $ca == "" then {} else {ca:$ca} end) + (if $end == "" then {} else {cert_end:$end} end)' 2>/dev/null \
+     + (if $ca == "" then {} else {ca:$ca} end) + (if $end == "" then {} else {cert_end:$end} end)
+     + (if $ip == "" then {} else {ip:$ip} end) + (if $pub == "" then {} else {public_ip:$pub} end)' 2>/dev/null \
     || jq -nc --arg v "$1" '{version:$v, scans:true, sweeps:true, diags:true}'
 }
 

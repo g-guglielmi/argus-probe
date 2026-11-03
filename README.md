@@ -100,6 +100,15 @@ limit (cgroup v2 `cpu.max`, or the v1 CFS quota; 0 = none) and `/proc/loadavg`. 
 a probe short on processes from one short on CPU, where more processes would only queue. Inside a
 container the load average is the whole host's.
 
+## Addresses
+
+Each check-in reports the address the container reaches out from (`ip`, the source of its route to
+the internet) and, every half hour and whenever that changes, its public address (`public_ip`), from
+one HTTPS call to Cloudflare's trace at `1.1.1.1` (an IP, so no name to resolve). On Docker's bridge
+the container's own address is a 172.17.x one; Argus then shows the address it sees the report come
+from, the host's. A probe VM's hourly OS report adds the VM's LAN address and gateway (`lan`, from
+`ip -j route get`). The Probes page shows them under the probe's name (argus-core DESIGN 18).
+
 ## Images & releases
 
 - Container: `ghcr.io/g-guglielmi/argus-probe` (built by `.github/workflows/probe-image.yml`), for

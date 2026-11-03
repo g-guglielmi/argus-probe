@@ -18,6 +18,16 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r19] - 2026-11-03
+
+### Added
+- **The probe reports its addresses.** The minute report carries the address the container reaches
+  out from (`ip`) and, every half hour and whenever that address changes, the probe's public one
+  (`public_ip`), looked up with one HTTPS call to Cloudflare's trace at `1.1.1.1` (no name to
+  resolve). A probe VM's OS report adds the VM's LAN address and gateway (`lan`), since its container
+  runs on Docker's bridge and sees only a 172.17.x address. Argus shows both under the probe's name
+  on the Probes page (argus-core with the matching change; an older core ignores them).
+
 ## [probe/v7.0.32-r18] - 2026-11-03
 
 ### Added
