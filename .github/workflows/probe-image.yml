@@ -72,6 +72,10 @@ jobs:
           dash -n deploy/probe-image/checkin.sh
           dash deploy/probe-image/tests/test_checkin.sh
 
+      # The diagnostics runner reads busybox's ping and traceroute and speaks DNS itself.
+      - name: Test the diagnostics
+        run: python3 deploy/probe-image/tests/test_diag.py
+
       # The VM's host tools ride the image: the installer writes what the manifest says, the manifest
       # matches the folder, the scripts parse.
       - name: Test the host tools

@@ -48,9 +48,19 @@ checkin_body() {
   _pinned=$(pinned_json "$3" 2>/dev/null || true); json_ok "$_pinned" || _pinned=null
   _cpu=$(cpu_json 2>/dev/null || true); json_ok "$_cpu" || _cpu=null
   jq -nc --arg v "$1" --argjson procs "$_procs" --argjson pinned "$_pinned" --argjson cpu "$_cpu" --arg ca "${4:-}" --arg end "${5:-}" \
-    '{version:$v, scans:true, sweeps:true, procs:$procs, procs_pinned:$pinned, cpu:$cpu}
+    '{version:$v, scans:true, sweeps:true, diags:true, procs:$procs, procs_pinned:$pinned, cpu:$cpu}
      + (if $ca == "" then {} else {ca:$ca} end) + (if $end == "" then {} else {cert_end:$end} end)' 2>/dev/null \
-    || jq -nc --arg v "$1" '{version:$v, scans:true, sweeps:true}'
+    || jq -nc --arg v "$1" '{version:$v, scans:true, sweeps:true, diags:true}'
+}
+
+# next_wait RESPONSE - seconds until the next check-in: the minute, or what Argus asked for while a
+# diagnostic waits for this probe (its "next", held to 2..60).
+next_wait() {
+  _n=$(printf '%s' "$1" | jq -r '.next // empty' 2>/dev/null || true)
+  case "$_n" in
+    ''|*[!0-9]*) echo 60; return ;;
+  esac
+  if [ "$_n" -lt 2 ]; then echo 2; elif [ "$_n" -gt 60 ]; then echo 60; else echo "$_n"; fi
 }
 
 # --- the monitoring CA ---

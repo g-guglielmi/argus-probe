@@ -263,6 +263,12 @@ export ZBX_TLSSERVERCERTSUBJECT="${ZBX_TLSSERVERCERTSUBJECT:-CN=zabbix-core}"
 # Each runs in a backgrounded python3 so this tick is never blocked; a lock file per kind keeps
 # runs serial, and both scripts POST their results straight back to Argus
 # (<checkin base>/scan-results). An older Argus simply never sends .scan/.sweep - inert.
+#
+# Diagnostics ride it too: "diags":true advertises them, and a response may carry a .diag ({id, tool,
+# target, ...}: a ping, traceroute or DNS lookup someone started in the Argus UI). argus_diag.py runs
+# it in the background and posts its results to <checkin base>/diag-results as they come. While one
+# waits for this probe, or the dialog that may start one is open, the response asks for the next
+# check-in in a few seconds (.next) instead of the minute.
 if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
   echo "argus-probe: fleet check-in enabled -> $CHECKIN_URL (version $PROBE_VERSION)"
   (
@@ -272,6 +278,8 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
     JOBFILE="$CERTS/scanjob.json"
     SWLOCK="$CERTS/unifisweep.lock"
     SWJOBFILE="$CERTS/sweepjob.json"
+    DGLOCK="$CERTS/diag.lock"
+    DGJOBFILE="$CERTS/diagjob.json"
     # The CA the proxy starts with (it reads ca.crt only at start), and the one in ca.crt now.
     RUN_CA=/tmp/argus-ca-running.crt
     cp -f "$CA" "$RUN_CA" 2>/dev/null || true
@@ -347,7 +355,22 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
           ) &
         fi
       fi
-      sleep 60
+      DIAG=$(printf '%s' "$RESP" | jq -c '.diag // empty' 2>/dev/null || true)
+      if [ -n "$DIAG" ]; then
+        # A diagnostic ends within two minutes; a lock this old is a crashed run - clear it.
+        if [ -f "$DGLOCK" ] && [ -n "$(find "$DGLOCK" -mmin +5 2>/dev/null)" ]; then rm -f "$DGLOCK"; fi
+        if [ ! -f "$DGLOCK" ]; then
+          touch "$DGLOCK"
+          printf '%s' "$DIAG" > "$DGJOBFILE"
+          echo "argus-probe: diagnostic requested by Argus: $(printf '%s' "$DIAG" | jq -r '"\(.tool // "?") \(.target // "?")"' 2>/dev/null || echo '?')"
+          (
+            ARGUS_PROBE_TOKEN="$PROBE_TOKEN" ARGUS_CHECKIN_URL="$CHECKIN_URL" \
+              python3 /usr/lib/zabbix/externalscripts/argus_diag.py --job "$DGJOBFILE" || true
+            rm -f "$DGLOCK" "$DGJOBFILE"
+          ) &
+        fi
+      fi
+      sleep "$(next_wait "$RESP")"
     done
   ) &
 fi

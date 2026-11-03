@@ -19,7 +19,7 @@ check() {
     FAILS=$((FAILS + 1))
   fi
 }
-base='.version == "7.0.31-r29" and .scans == true and .sweeps == true'
+base='.version == "7.0.31-r29" and .scans == true and .sweeps == true and .diags == true'
 PROCS='{"StartPingers":5,"StartPollers":5}'
 
 # Nothing set on the container: the case every probe is in (r8 to r28 sent an empty body here).
@@ -139,6 +139,14 @@ expect "it ends later, same name" 'openssl x509 -in "$T/proxy.crt" -noout -check
 expect "the old pair is kept" '[ "$(cat "$T/proxy.crt.old")" = "$OLD_CRT" ] && [ "$(cat "$T/proxy.key.old")" = "$OLD_KEY" ]'
 unset -f curl
 rm -rf "$T"
+
+# The next check-in: the minute, unless Argus asks for sooner while a diagnostic waits (2..60 s).
+expect "no next: the minute" '[ "$(next_wait "{\"target\":\"latest\"}")" = 60 ]'
+expect "an empty answer: the minute" '[ "$(next_wait "")" = 60 ]'
+expect "next is taken" '[ "$(next_wait "{\"next\":3}")" = 3 ]'
+expect "next is held to 2" '[ "$(next_wait "{\"next\":0}")" = 2 ]'
+expect "next is held to 60" '[ "$(next_wait "{\"next\":900}")" = 60 ]'
+expect "a next that is not a number: the minute" '[ "$(next_wait "{\"next\":\"1; reboot\"}")" = 60 ]'
 
 if [ "$FAILS" -gt 0 ]; then
   echo "$FAILS failed"

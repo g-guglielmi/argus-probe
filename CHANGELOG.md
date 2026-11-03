@@ -18,6 +18,18 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r14] - 2026-11-03
+
+### Added
+- **Diagnostics from the probe.** A ping, a traceroute or a DNS lookup someone starts in the Argus
+  UI (a host's or a probe's menu, Diagnose) runs on the probe: the check-in hands it out,
+  `argus_diag.py` runs busybox's ping and traceroute against the target's IPv4 address, or asks the
+  DNS server directly and the system resolver too, and posts the results back as they come. The
+  probe advertises it with `"diags": true` in its minute report; an older Argus never sends one.
+- **Fast check-ins while a diagnostic waits.** The check-in answer may carry `next`, the seconds
+  until the next check-in (held to 2..60): Argus asks for 3 while a diagnostic waits for the probe
+  or the dialog that may start one is open, and the probe goes back to the minute by itself.
+
 ## [probe/v7.0.32-r13] - 2026-10-28
 
 ### Changed

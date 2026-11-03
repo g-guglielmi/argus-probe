@@ -33,12 +33,13 @@ via cloud-init (a seed ISO) is also supported, in which case this page is skippe
 - **[argus-updater](https://github.com/g-guglielmi/argus-updater)** - the socket-holding self-update
   sidecar for the core.
 
-## Check-in & network discovery
+## Check-in, network discovery & diagnostics
 
 The running probe reports to Argus every **60 seconds** (`POST /api/probes/checkin`, Bearer probe
-token minted at enrollment): `{"version": "<zabbix>-r<n>", "scans": true, "sweeps": true, "procs":
-{...}, "procs_pinned": [...], "cpu": {...}}` - its image version, the **network-scan** and
-**UniFi-sweep capability** adverts, and the process counts and CPU described below. The report is
+token minted at enrollment): `{"version": "<zabbix>-r<n>", "scans": true, "sweeps": true, "diags":
+true, "procs": {...}, "procs_pinned": [...], "cpu": {...}}` - its image version, the
+**network-scan**, **UniFi-sweep** and **diagnostics capability** adverts, and the process counts and
+CPU described below. The report is
 built by `checkin.sh` (sourced by the entrypoint): a part it can't read is sent as `null`, which Argus
 skips, so the rest still gets through; `tests/test_checkin.sh` checks it under dash in CI before every
 image build. The response
@@ -59,6 +60,16 @@ queued a discovery job for this probe, ONE one-shot job:
 Both POST their raw facts back to `POST /api/probes/scan-results`, run one at a time per kind
 (lock files), and keep the probe a pure reporter with no listening port; an older Argus that never
 sends `scan`/`sweep` leaves the branches inert.
+
+The response may also carry a **diagnostic** an admin or helpdesk user started in the Argus UI:
+`diag: {id, tool, target, count, type, server}`, a ping, a traceroute or a DNS lookup. The entrypoint
+backgrounds `argus_diag.py`, which runs busybox's `ping` and `traceroute` against the target's IPv4
+address, or asks the DNS server directly and the system resolver too (so an answer the checks never
+see shows up as the two differing), and POSTs the results to `POST /api/probes/diag-results` as they
+come. The target is checked again on the probe and passed to the tools as one argument, never
+through a shell. While a diagnostic waits for the probe, or the dialog that may start one is open,
+the response carries `next: 3` and the probe checks in again three seconds later (any `next` is
+held to 2..60); without it, the minute.
 
 ## Container health
 
