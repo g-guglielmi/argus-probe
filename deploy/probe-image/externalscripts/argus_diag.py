@@ -28,7 +28,8 @@ import struct
 import subprocess
 import sys
 import time
-import urllib.request
+
+import argus_corepost
 
 MAX_HOPS = 30
 TOOLS = ("ping", "traceroute", "dns")
@@ -462,20 +463,6 @@ def run(req, progress=lambda r: None):
     return res
 
 
-def post(url, token, body, tries=1):
-    data = json.dumps(body).encode("utf-8")
-    for attempt in range(tries):
-        try:
-            req = urllib.request.Request(url, data=data, method="POST",
-                                         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=10):
-                return True
-        except Exception:
-            if attempt < tries - 1:
-                time.sleep(3)
-    return False
-
-
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     if mode == "--print" and len(sys.argv) > 2:
@@ -497,9 +484,9 @@ def main():
             # Partial results, at most twice a second: the dialog reads them every second.
             if time.monotonic() - last[0] >= 0.5:
                 last[0] = time.monotonic()
-                post(url, token, {"id": jid, "result": res})
+                argus_corepost.post(url, token, {"id": jid, "result": res}, who="argus_diag", log=False)
 
-        if not post(url, token, {"id": jid, "result": run(job, progress)}, tries=3):
+        if not argus_corepost.post(url, token, {"id": jid, "result": run(job, progress)}, tries=3, who="argus_diag"):
             sys.exit(1)
         return
     sys.stderr.write("usage: argus_diag.py --job <job.json> | --print '<request json>'\n")

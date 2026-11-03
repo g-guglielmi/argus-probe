@@ -18,6 +18,18 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r15] - 2026-11-03
+
+### Fixed
+- **Results reach Argus where the core's name has no AAAA record answered cleanly.** A diagnostic,
+  network scan or UniFi sweep posted its results with one lookup for both address families, and
+  musl (the image is Alpine) reads that whole lookup as "no such name" when the AAAA half comes
+  back NXDOMAIN, as some DNS setups answer for a name with only an A record. The check-in goes
+  through curl and was never hit, so a probe checked in fine and lost every result: a diagnostic
+  ended "none of its results reached Argus". The three now post through `argus_corepost.py`, which
+  looks the core up IPv4 first, each family on its own, sends `User-Agent: argus-probe`, and logs a
+  failed post with why to the probe's container log.
+
 ## [probe/v7.0.32-r14] - 2026-11-03
 
 ### Added

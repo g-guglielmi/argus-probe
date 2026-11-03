@@ -12,7 +12,8 @@ import threading
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-spec = importlib.util.spec_from_file_location("diag", os.path.join(HERE, "..", "externalscripts", "argus_diag.py"))
+sys.path.insert(0, os.path.join(HERE, "..", "externalscripts"))  # argus_diag imports argus_corepost
+spec =importlib.util.spec_from_file_location("diag", os.path.join(HERE, "..", "externalscripts", "argus_diag.py"))
 diag = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(diag)
 

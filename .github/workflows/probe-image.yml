@@ -76,6 +76,10 @@ jobs:
       - name: Test the diagnostics
         run: python3 deploy/probe-image/tests/test_diag.py
 
+      # The jobs' results reach the core even where the AAAA half of its name is NXDOMAIN (musl).
+      - name: Test the result posts
+        run: python3 deploy/probe-image/tests/test_corepost.py
+
       # The VM's host tools ride the image: the installer writes what the manifest says, the manifest
       # matches the folder, the scripts parse.
       - name: Test the host tools

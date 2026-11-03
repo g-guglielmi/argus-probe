@@ -27,10 +27,11 @@ import os
 import socket
 import ssl
 import sys
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+import argus_corepost
 
 TIMEOUT = 30
 
@@ -172,18 +173,7 @@ def sweep(base, key, tls="", fingerprint=""):
 
 
 def post_results(url, token, body):
-    data = json.dumps(body).encode("utf-8")
-    for attempt in range(3):
-        try:
-            req = urllib.request.Request(url, data=data, method="POST",
-                                         headers={"Authorization": "Bearer " + token,
-                                                  "Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=30):
-                return True
-        except Exception:
-            if attempt < 2:
-                time.sleep(10)
-    return False
+    return argus_corepost.post(url, token, body, tries=3, wait=10, timeout=30, who="argus_unifi_sweep")
 
 
 def scrub_cmdline(title):
