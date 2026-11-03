@@ -80,15 +80,16 @@ systemctl enable argus-os-report.timer argus-os-report.path argus-host-tools.pat
 /usr/local/sbin/argus-guest-agent --all
 
 echo "==> configuring OS auto-patching (unattended-upgrades, security only)"
-# A probe is "cattle": patch + reboot are fully hands-off. Security suite only, auto-reboot in a weekly
-# ~03:00 window (probes buffer 7 days offline, so a ~60s reboot is invisible). needrestart auto-restarts
-# services after a libc/openssl bump so most updates need no reboot at all.
+# A probe is "cattle": patch + reboot are fully hands-off. Security suite only; a reboot an update
+# needs waits for the reboot window Argus hands the probe (argus-reboot-check, every day at 03:00
+# until Argus says otherwise; probes buffer 7 days offline, so a ~60s reboot is invisible), so
+# unattended-upgrades never reboots by itself. needrestart auto-restarts services after a
+# libc/openssl bump so most updates need no reboot at all.
 cat > /etc/apt/apt.conf.d/52argus-unattended <<'UAU'
 Unattended-Upgrade::Origins-Pattern {
         "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
 };
-Unattended-Upgrade::Automatic-Reboot "true";
-Unattended-Upgrade::Automatic-Reboot-Time "03:00";
+Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::MinimalSteps "true";
 UAU
 cat > /etc/apt/apt.conf.d/20auto-upgrades <<'AU'

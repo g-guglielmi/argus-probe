@@ -148,6 +148,25 @@ expect "next is held to 2" '[ "$(next_wait "{\"next\":0}")" = 2 ]'
 expect "next is held to 60" '[ "$(next_wait "{\"next\":900}")" = 60 ]'
 expect "a next that is not a number: the minute" '[ "$(next_wait "{\"next\":\"1; reboot\"}")" = 60 ]'
 
+# A probe VM's reboots: the window goes into the data folder (only when it changed), a request once.
+H=$(mktemp -d)
+host_files '{"target":"latest"}' "$H" >/dev/null
+expect "a container probe writes nothing" '[ -z "$(ls -A "$H")" ]'
+W='{"reboot_window":{"mode":"auto","weekday":-1,"hour":3,"minute":0,"tz":"Europe/Rome"}}'
+expect "the window is announced" '[ -n "$(host_files "$W" "$H")" ]'
+check "the window is kept" "$(cat "$H/reboot-window.json")" '.mode == "auto" and .weekday == -1 and .hour == 3 and .tz == "Europe/Rome"'
+expect "the same window again writes nothing" '[ -z "$(host_files "$W" "$H")" ]'
+host_files '{"reboot_window":{"mode":"auto","weekday":9,"hour":3,"minute":0}}' "$H" >/dev/null
+check "a bad window is refused" "$(cat "$H/reboot-window.json")" '.weekday == -1'
+host_files '{"reboot_window":{"mode":"notify","weekday":0,"hour":0,"minute":0,"tz":"../../etc/x"}}' "$H" >/dev/null
+check "a bad zone is dropped" "$(cat "$H/reboot-window.json")" '.mode == "notify" and (has("tz") | not)'
+host_files '{"host_request":{"kind":"reboot","at":1700000000}}' "$H" >/dev/null
+check "a reboot request" "$(cat "$H/reboot-request.json")" '.at == 1700000000'
+host_files '{"host_request":{"kind":"rm -rf","at":1700000000}}' "$H" >/dev/null
+host_files '{"host_request":{"kind":"patch","at":"1; reboot"}}' "$H" >/dev/null
+expect "an odd request writes nothing" '[ ! -e "$H/patch-request.json" ] && [ "$(ls -A "$H" | wc -l)" -eq 2 ]'
+rm -rf "$H"
+
 if [ "$FAILS" -gt 0 ]; then
   echo "$FAILS failed"
   exit 1

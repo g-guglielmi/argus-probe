@@ -100,8 +100,18 @@ patch and the reboot are hands-off.
 
 - **`unattended-upgrades`** applies the **security suite only**, automatically. `needrestart` restarts
   affected services after a libc/openssl bump, so most updates need no reboot at all.
-- When a reboot *is* required, the VM reboots itself in a **weekly ~03:00 window**
-  (`Automatic-Reboot-Time`). Probes buffer 7 days offline, so a ~60 s reboot is invisible.
+- When a reboot *is* required, the VM reboots itself in its **reboot window**: the fleet's, set on
+  Argus's **Updates** page next to the fleet target (every day at 03:00 by default), or one of its
+  own from the probe's **⋮ > Reboot window…**; or never by itself (notify only). The window reads
+  on the core's clock, whatever time zone the VM runs. Argus hands it over at the probe's check-in,
+  the proxy container keeps it as `reboot-window.json` in `/docker/argus-probe`, and
+  **`argus-reboot-check.timer`** honours it (unattended-upgrades' own reboot is off). Probes buffer
+  7 days offline, so a ~60 s reboot is invisible.
+- **Reboot now** and **Patch now** (the Updates page, the probe's ⋮ menu) take the same way: the
+  check-in hands the request to the proxy container, which drops `reboot-request.json` or
+  `patch-request.json` in the data folder, and a path unit starts `argus-reboot-check` or
+  `argus-patch` within seconds. A reboot happens only if the OS still asks for one; Patch now runs
+  the same security-only `unattended-upgrade` as the daily one.
 - **`argus-os-report.timer`** posts the VM's pending **security-update count**, **reboot-required**
   flag and OS name (Debian by its point release, "Debian 13.7") to Argus hourly
   (`POST /api/probes/os-status`, probe-token auth), so the **Probes** page's **VM OS** column shows which sites carry CVEs or are waiting on their reboot window, and keeps the same as

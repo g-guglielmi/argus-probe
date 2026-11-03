@@ -4,11 +4,15 @@
 """Report this probe VM's OS patch status to Argus (DESIGN 14c) and keep a copy for the console.
 
 The VM patches its own Debian OS locally via unattended-upgrades (security suite only) and reboots
-itself in a weekly ~03:00 window. This reporter only reports: it posts the pending security-update
-count and the reboot-required flag to Argus, so the fleet view shows which sites carry CVEs or need
-a reboot, and writes the same as os-status.json into the probe's data folder, where the console menu
-reads it. Run hourly by argus-os-report.timer, after the host tools were applied, and as soon as the
-probe enrolls (argus-os-report.path watches proxy.env), so the first report doesn't wait an hour.
+itself only when an update needs it, in the reboot window Argus hands it (argus-reboot-check). This
+reporter only reports: it posts the pending security-update count and the reboot-required flag to
+Argus, so the fleet view shows which sites carry CVEs or need a reboot, and writes the same as
+os-status.json into the probe's data folder, where the console menu reads it. With them go what
+Reboot now and Patch now need: that this VM's scripts take them, when it booted (a reboot Argus asked
+for is done once the VM booted after it), and the last result of each. Run hourly by
+argus-os-report.timer, a minute after boot, after the host tools were applied, after a Reboot now or
+Patch now, and as soon as the probe enrolls (argus-os-report.path watches proxy.env), so the first
+report doesn't wait an hour.
 
 Standard library only. Authenticated by the same long-lived probe token the enrollment wrote to
 proxy.env, so until the VM has enrolled there is nothing to post (the local file is still written).
@@ -73,6 +77,31 @@ def os_name(release="/etc/os-release", debian="/etc/debian_version"):
     return kv.get("PRETTY_NAME", "")
 
 
+def booted_at(stat="/proc/stat"):
+    """When this VM booted (unix seconds), 0 if unreadable."""
+    try:
+        with open(stat, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("btime "):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def last_result(name):
+    """The last result argus-reboot-check or argus-patch left (reboot-result.json, patch-result.json),
+    or None."""
+    try:
+        with open(os.path.join(STATE_DIR, name), encoding="utf-8") as fh:
+            r = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(r, dict) or not isinstance(r.get("state"), str) or not isinstance(r.get("at"), int):
+        return None
+    return {k: r[k] for k in ("state", "at", "why", "detail") if k in r}
+
+
 def write_status(status):
     """The local copy, atomically and world-readable: the console menu reads it as root, the probe
     container could read it through its data volume."""
@@ -92,14 +121,22 @@ def main():
         "reboot_required": os.path.exists("/var/run/reboot-required"),
         "os": os_name(),
         "reported_at": int(time.time()),
+        "reboot_now": True,
+        "patch_now": True,
+        "booted_at": booted_at(),
     }
+    for kind in ("reboot", "patch"):
+        r = last_result(kind + "-result.json")
+        if r:
+            status[kind] = r
     write_status(status)
     env = read_kv(META)
     token, checkin = env.get("PROBE_TOKEN", ""), env.get("CHECKIN_URL", "")
     if not token or not checkin:
         return 0  # not enrolled yet - nothing to post
     url = checkin.rsplit("/", 1)[0] + "/os-status"  # .../api/probes/checkin -> .../api/probes/os-status
-    body = json.dumps({k: status[k] for k in ("sec_updates", "reboot_required", "os")}).encode("utf-8")
+    body = json.dumps({k: status[k] for k in ("sec_updates", "reboot_required", "os", "reboot_now", "patch_now",
+                                              "booted_at", "reboot", "patch") if k in status}).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"Authorization": "Bearer " + token,
                                           "Content-Type": "application/json"})

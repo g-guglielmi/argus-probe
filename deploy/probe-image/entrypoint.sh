@@ -269,6 +269,9 @@ export ZBX_TLSSERVERCERTSUBJECT="${ZBX_TLSSERVERCERTSUBJECT:-CN=zabbix-core}"
 # it in the background and posts its results to <checkin base>/diag-results as they come. While one
 # waits for this probe, or the dialog that may start one is open, the response asks for the next
 # check-in in a few seconds (.next) instead of the minute.
+#
+# On a probe VM the answer also carries its reboot window and, now and then, a Reboot now or Patch
+# now (checkin.sh, host_files): they go into the data folder, where the VM's path units act on them.
 if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
   echo "argus-probe: fleet check-in enabled -> $CHECKIN_URL (version $PROBE_VERSION)"
   (
@@ -370,6 +373,7 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
           ) &
         fi
       fi
+      host_files "$RESP" /var/lib/zabbix
       sleep "$(next_wait "$RESP")"
     done
   ) &

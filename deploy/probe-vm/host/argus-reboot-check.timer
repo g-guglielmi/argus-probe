@@ -1,0 +1,9 @@
+[Unit]
+Description=Argus: check every 5 minutes whether this probe VM is in its reboot window
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

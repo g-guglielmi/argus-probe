@@ -18,6 +18,29 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r17] - 2026-11-03
+
+### Added
+- **A probe VM's reboot window, from Argus.** A probe VM reboots only when an update needs it, in
+  its reboot window: the fleet's, set on Argus's Updates page (every day at 03:00 by default, what
+  the VM did before), or one of its own; or notify only. The window reads on the core's clock,
+  whatever time zone the VM runs. The check-in hands it over, the proxy container keeps it as
+  `reboot-window.json` in the data folder, and the new host tool `argus-reboot-check` (a 5-minute
+  timer) honours it; unattended-upgrades' own reboot is switched off. Without a window from Argus
+  (an older core) the VM keeps every day at 03:00 on its own clock.
+- **Reboot now and Patch now on a probe VM.** Argus hands the request to the proxy container at
+  its check-in; the container drops `reboot-request.json` or `patch-request.json` in the data folder,
+  and a path unit starts `argus-reboot-check` or the new `argus-patch` within seconds. A reboot
+  happens only if the OS still asks for one, Patch now runs the same security-only
+  `unattended-upgrade` as the daily one, and each leaves a result for Argus.
+- **The OS report says more.** `argus-os-report` also sends that the VM takes Reboot now and Patch
+  now, when it booted, and the last reboot and patch results, and runs a minute after boot (was
+  four), so a reboot from Argus shows as done soon after the VM is back.
+
+### Changed
+- **The probe VM image** turns off unattended-upgrades' own reboot at build (from probe-vm v0.3.9):
+  the reboot window decides.
+
 ## [probe/v7.0.32-r16] - 2026-11-03
 
 ### Fixed

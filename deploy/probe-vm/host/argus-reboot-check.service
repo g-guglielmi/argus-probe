@@ -1,0 +1,7 @@
+[Unit]
+Description=Argus: reboot this probe VM in its window when the OS requires it (DESIGN 14c)
+
+[Service]
+Type=oneshot
+Environment=ARGUS_STATE_DIR=@STATE_DIR@
+ExecStart=/usr/local/sbin/argus-reboot-check

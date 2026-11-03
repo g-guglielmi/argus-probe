@@ -1,0 +1,7 @@
+[Unit]
+Description=Argus: apply the pending security updates on request (Patch now, DESIGN 14c)
+
+[Service]
+Type=oneshot
+Environment=ARGUS_STATE_DIR=@STATE_DIR@
+ExecStart=/usr/local/sbin/argus-patch

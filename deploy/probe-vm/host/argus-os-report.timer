@@ -2,7 +2,7 @@
 Description=Argus: report this probe VM's OS patch status hourly
 
 [Timer]
-OnBootSec=4min
+OnBootSec=1min
 OnUnitActiveSec=1h
 Persistent=true
 

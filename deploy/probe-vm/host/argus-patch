@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+
+# argus-patch - Patch now on a probe VM (Argus DESIGN 14c): the pending security updates, right away,
+# the same unattended-upgrade run that applies them by itself every day. Argus hands the request to
+# the probe at its check-in, the proxy container drops patch-request.json in the data folder, and
+# argus-patch.path starts this. The request carries nothing but its time.
+set -u
+DIR="${ARGUS_STATE_DIR:-/docker/argus-probe}"
+REQ="$DIR/patch-request.json"
+RES="$DIR/patch-result.json"
+[ -f "$REQ" ] || exit 0
+rm -f "$REQ"
+why="request"
+result() {
+  umask 022
+  tmp="$(mktemp "$DIR/.patch-result.XXXXXX")"
+  printf '{"state":"%s","at":%d,"why":"%s","detail":"%s"}\n' "$1" "$(date +%s)" "$why" "$2" > "$tmp"
+  mv -f "$tmp" "$RES"; chmod 0644 "$RES"
+}
+logger -t argus-patch "applying the pending security updates on request from Argus"
+DEBIAN_FRONTEND=noninteractive unattended-upgrade -v 2>&1 | logger -t argus-patch
+if [ "${PIPESTATUS[0]}" -eq 0 ]; then
+  result done "security updates applied"
+else
+  result failed "unattended-upgrade reported a problem: journalctl -t argus-patch on the probe VM has the details"
+fi
+ARGUS_STATE_DIR="$DIR" /usr/local/sbin/argus-os-report || true

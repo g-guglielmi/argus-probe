@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+
+# argus-reboot-check - a probe VM reboots only when an update needs it, in its reboot window (Argus
+# DESIGN 14c). Argus hands the window to the probe at its minute check-in and the proxy container
+# keeps it in the data folder as reboot-window.json: auto or notify only, a day (-1 = every day) and
+# a time on the core's clock (tz), so 03:00 is one moment at every site. Without the file (an older
+# core, a probe not enrolled yet) the VM keeps what it always did: every day at 03:00 on its own clock.
+# Reboot now arrives the same way, as reboot-request.json, and argus-reboot-check.path starts this
+# within seconds. The VM reboots only if its OS still asks for it; the request carries nothing else.
+# This replaces unattended-upgrades' own reboot, which it switches off.
+set -u
+DIR="${ARGUS_STATE_DIR:-/docker/argus-probe}"
+WIN="$DIR/reboot-window.json"
+REQ="$DIR/reboot-request.json"
+RES="$DIR/reboot-result.json"
+RR="${ARGUS_REBOOT_FLAG:-/var/run/reboot-required}"
+UU="${ARGUS_UU_REBOOT_CONF:-/etc/apt/apt.conf.d/53argus-reboot-window}"
+ZONES="${ARGUS_ZONEINFO:-/usr/share/zoneinfo}"
+
+# unattended-upgrades reboots by itself at 03:00 when the image's 52argus-unattended says so; this
+# watcher owns the reboot now, so a later file turns that off (apt reads them in order, the last wins).
+want='Unattended-Upgrade::Automatic-Reboot "false"; // the Argus reboot window decides (argus-reboot-check)'
+if [ "$(cat "$UU" 2>/dev/null)" != "$want" ]; then
+  printf '%s\n' "$want" > "$UU.tmp" && chmod 0644 "$UU.tmp" && mv -f "$UU.tmp" "$UU"
+fi
+
+# What Argus shows afterwards (reboot-result.json): rebooting, done or failed, why, one sentence.
+why=""
+result() {
+  umask 022
+  tmp="$(mktemp "$DIR/.reboot-result.XXXXXX")"
+  printf '{"state":"%s","at":%d,"why":"%s","detail":"%s"}\n' "$1" "$(date +%s)" "$why" "$2" > "$tmp"
+  mv -f "$tmp" "$RES"; chmod 0644 "$RES"
+}
+if [ -f "$REQ" ]; then
+  why="request"
+  rm -f "$REQ"
+  if [ -f "$RR" ]; then
+    logger -t argus-reboot "rebooting the probe VM on request from Argus"
+    result rebooting "rebooting the probe VM"
+    systemctl reboot
+  else
+    result done "no reboot is needed"
+    /usr/local/sbin/argus-os-report || true
+  fi
+  exit 0
+fi
+[ -f "$RR" ] || exit 0
+
+mode=auto; wd=-1; wh=3; wm=0; tz=""
+if [ -f "$WIN" ]; then
+  mode="$(sed -n 's/.*"mode": *"\([a-z]*\)".*/\1/p' "$WIN")"
+  wd="$(sed -n 's/.*"weekday": *\(-\{0,1\}[0-9]*\).*/\1/p' "$WIN")"
+  wh="$(sed -n 's/.*"hour": *\([0-9]*\).*/\1/p' "$WIN")"
+  wm="$(sed -n 's/.*"minute": *\([0-9]*\).*/\1/p' "$WIN")"
+  tz="$(sed -n 's/.*"tz": *"\([A-Za-z0-9/_+-]*\)".*/\1/p' "$WIN")"
+fi
+[ "$mode" = "auto" ] || exit 0
+case "$wd" in -1|[0-6]) ;; *) exit 0 ;; esac
+case "$wh" in [0-9]|1[0-9]|2[0-3]) ;; *) exit 0 ;; esac
+case "$wm" in [0-9]|[1-5][0-9]) ;; *) exit 0 ;; esac
+# The core's zone, if this VM knows it (else its own clock).
+case "$tz" in ''|/*|*..*) tz="" ;; esac
+[ -n "$tz" ] && [ -f "$ZONES/$tz" ] || tz=""
+clock() { if [ -n "$tz" ]; then TZ="$tz" date "$@"; else date "$@"; fi; }
+now_wd="$(clock +%w)"; now_h="$(clock +%-H)"; now_m="$(clock +%-M)"
+{ [ "$wd" = "-1" ] || [ "$now_wd" = "$wd" ]; } && [ "$now_h" = "$wh" ] || exit 0
+# The timer fires every 5 min; reboot within a 10-minute slack of the target minute.
+if [ "$now_m" -ge "$wm" ] && [ "$now_m" -lt $((wm + 10)) ]; then
+  why="window"
+  logger -t argus-reboot "OS reboot-required in the reboot window; rebooting the probe VM"
+  result rebooting "rebooting the probe VM in its window"
+  systemctl reboot
+fi

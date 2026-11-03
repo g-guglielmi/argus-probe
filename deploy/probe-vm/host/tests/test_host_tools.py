@@ -58,7 +58,7 @@ class ManifestTest(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("bash") and shutil.which("sh"), "needs a POSIX shell")
     def test_the_shell_scripts_parse(self):
-        for name in ("argus-host-tools-apply", "argus-console-login"):
+        for name in ("argus-host-tools-apply", "argus-console-login", "argus-reboot-check", "argus-patch"):
             r = subprocess.run([shutil.which("bash"), "-n", os.path.join(HOST, name)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
 
@@ -182,6 +182,93 @@ class InstallerTest(unittest.TestCase):
                             "--root", self.root, "--update-dir", self.update], capture_output=True, text=True)
         self.assertEqual(r.returncode, 1)
         self.assertIn("carries no host tools", r.stderr)
+
+
+@unittest.skipUnless(shutil.which("bash"), "needs bash")
+class RebootCheckTest(unittest.TestCase):
+    """argus-reboot-check against a stub clock: it reboots only when the OS asks for it, in its window."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.state = os.path.join(self.tmp, "state")
+        self.bin = os.path.join(self.tmp, "bin")
+        self.zones = os.path.join(self.tmp, "zoneinfo")
+        for d in (self.state, self.bin, os.path.join(self.zones, "Europe")):
+            os.makedirs(d)
+        open(os.path.join(self.zones, "Europe", "Rome"), "w").close()
+        self.flag = os.path.join(self.tmp, "reboot-required")
+        self.log = os.path.join(self.tmp, "calls")
+        # The clock reads Sunday 03:02 (and records the zone it was asked in); systemctl, logger and
+        # the reporter only record that they ran.
+        self.stub("date", 'echo "TZ=${TZ:-}" >> "%s"; case "$1" in +%%w) echo 0;; +%%-H) echo 3;; +%%-M) echo 2;; *) echo 1700000000;; esac' % self.log)
+        self.stub("systemctl", 'echo "systemctl $*" >> "%s"' % self.log)
+        self.stub("logger", ':')
+
+    def stub(self, name, body):
+        path = os.path.join(self.bin, name)
+        with open(path, "w", newline="\n") as fh:
+            fh.write("#!/usr/bin/env bash\n" + body + "\n")
+        os.chmod(path, 0o755)
+
+    def run_check(self, window=None, needs_reboot=True):
+        if window is not None:
+            with open(os.path.join(self.state, "reboot-window.json"), "w") as fh:
+                fh.write(json.dumps(window))
+        if needs_reboot:
+            open(self.flag, "w").close()
+        stubs = self.bin
+        if os.name == "nt":  # Git Bash: a drive letter's colon would split its PATH
+            stubs = subprocess.run(["cygpath", "-u", stubs], capture_output=True, text=True).stdout.strip()
+        env = dict(os.environ, ARGUS_STUBS=stubs, ARGUS_STATE_DIR=self.state,
+                   ARGUS_REBOOT_FLAG=self.flag, ARGUS_UU_REBOOT_CONF=os.path.join(self.tmp, "53argus"), ARGUS_ZONEINFO=self.zones)
+        r = subprocess.run([shutil.which("bash"), "-c", 'PATH="$ARGUS_STUBS:$PATH" exec bash "$0"', os.path.join(HOST, "argus-reboot-check")],
+                           env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        try:
+            with open(self.log) as fh:
+                return fh.read()
+        except FileNotFoundError:
+            return ""
+
+    def test_without_a_window_it_keeps_every_day_at_three(self):
+        self.assertIn("systemctl reboot", self.run_check())
+
+    def test_every_day_in_the_cores_zone(self):
+        calls = self.run_check({"mode": "auto", "weekday": -1, "hour": 3, "minute": 0, "tz": "Europe/Rome"})
+        self.assertIn("systemctl reboot", calls)
+        self.assertIn("TZ=Europe/Rome", calls)
+        with open(os.path.join(self.state, "reboot-result.json")) as fh:
+            self.assertEqual(json.load(fh)["why"], "window")
+
+    def test_another_day_or_hour_waits(self):
+        self.assertNotIn("systemctl", self.run_check({"mode": "auto", "weekday": 1, "hour": 3, "minute": 0}))
+        self.assertNotIn("systemctl", self.run_check({"mode": "auto", "weekday": 0, "hour": 4, "minute": 0}))
+
+    def test_notify_only_never_reboots(self):
+        self.assertNotIn("systemctl", self.run_check({"mode": "notify", "weekday": 0, "hour": 0, "minute": 0}))
+
+    def test_no_reboot_without_the_os_asking(self):
+        self.assertNotIn("systemctl", self.run_check({"mode": "auto", "weekday": -1, "hour": 3, "minute": 0}, needs_reboot=False))
+
+    def test_an_unknown_zone_falls_back_to_the_vms_clock(self):
+        calls = self.run_check({"mode": "auto", "weekday": -1, "hour": 3, "minute": 0, "tz": "Mars/Base"})
+        self.assertIn("systemctl reboot", calls)
+        self.assertNotIn("TZ=Mars", calls)
+
+    def test_it_switches_off_unattended_upgrades_own_reboot(self):
+        self.run_check(needs_reboot=False)
+        with open(os.path.join(self.tmp, "53argus")) as fh:
+            self.assertIn('Automatic-Reboot "false"', fh.read())
+
+    def test_reboot_now_only_when_needed(self):
+        stub_report = os.path.join(self.tmp, "report")
+        open(os.path.join(self.state, "reboot-request.json"), "w").close()
+        calls = self.run_check({"mode": "notify", "weekday": 0, "hour": 0, "minute": 0})
+        self.assertIn("systemctl reboot", calls)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "reboot-request.json")))
+        with open(os.path.join(self.state, "reboot-result.json")) as fh:
+            self.assertEqual(json.load(fh)["state"], "rebooting")
 
 
 if __name__ == "__main__":

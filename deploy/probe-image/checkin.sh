@@ -63,6 +63,35 @@ next_wait() {
   if [ "$_n" -lt 2 ]; then echo 2; elif [ "$_n" -gt 60 ]; then echo 60; else echo "$_n"; fi
 }
 
+# --- a probe VM's reboots ---
+# Argus hands a probe VM the reboot window its host keeps, and now and then a Reboot now or a Patch
+# now (core DESIGN 14c). Only this container holds the data folder the VM's path units watch, so it
+# writes them there: reboot-window.json (only when it changed) and, once, reboot-request.json or
+# patch-request.json. The host trusts nothing else in them: a request does only what the OS already
+# asks for (the reboot it needs, the pending security updates). A container probe gets neither.
+
+# host_files RESPONSE DIR - write what the check-in answer says about the VM's reboots into DIR.
+host_files() {
+  _w=$(printf '%s' "$1" | jq -c '.reboot_window
+    | select(type == "object" and (.mode == "auto" or .mode == "notify")
+        and (.weekday | type == "number" and . >= -1 and . <= 6 and floor == .)
+        and (.hour | type == "number" and . >= 0 and . <= 23 and floor == .)
+        and (.minute | type == "number" and . >= 0 and . <= 59 and floor == .))
+    | {mode, weekday, hour, minute}
+      + (if (.tz | type == "string" and test("^[A-Za-z][A-Za-z0-9/_+-]{0,63}$")) then {tz} else {} end)' 2>/dev/null || true)
+  if [ -n "$_w" ] && [ "$_w" != "$(cat "$2/reboot-window.json" 2>/dev/null)" ]; then
+    printf '%s
+' "$_w" > "$2/.reboot-window.json.tmp" && chmod 0644 "$2/.reboot-window.json.tmp"       && mv -f "$2/.reboot-window.json.tmp" "$2/reboot-window.json"       && echo "argus-probe: reboot window from Argus: $_w"
+  fi
+  _k=$(printf '%s' "$1" | jq -r '.host_request.kind // empty' 2>/dev/null || true)
+  _at=$(printf '%s' "$1" | jq -r '.host_request.at // empty' 2>/dev/null || true)
+  case "$_k" in reboot|patch) ;; *) return 0 ;; esac
+  case "$_at" in ''|*[!0-9]*) return 0 ;; esac
+  printf '{"at":%s}
+' "$_at" > "$2/.$_k-request.json.tmp" && chmod 0644 "$2/.$_k-request.json.tmp"     && mv -f "$2/.$_k-request.json.tmp" "$2/$_k-request.json"     && echo "argus-probe: $_k requested by Argus: handed to the probe VM's host"
+  return 0
+}
+
 # --- the monitoring CA ---
 # The core VM renews the CA two years before its end: signed again with its own key, the same name,
 # a later end (argus-cert-renew, core DESIGN 14c). Every certificate it signed stays trusted, so the
