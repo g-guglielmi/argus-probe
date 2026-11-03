@@ -85,6 +85,11 @@ jobs:
       - name: Test the host tools
         run: python3 deploy/probe-vm/host/tests/test_host_tools.py
 
+      # arm64 is built under emulation next to amd64, so a Raspberry Pi 4/5 (64-bit OS) runs the same
+      # image and the same signature covers both.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
@@ -226,6 +231,7 @@ jobs:
           file: ./deploy/probe-image/Dockerfile
           build-contexts: |
             hosttools=./deploy/probe-vm/host
+          platforms: linux/amd64,linux/arm64
           pull: true          # re-resolve the freshest base at build time
           push: true
           provenance: true

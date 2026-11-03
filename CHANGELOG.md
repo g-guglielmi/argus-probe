@@ -18,6 +18,13 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r18] - 2026-11-03
+
+### Added
+- **The probe image runs on arm64 too.** Every build publishes `linux/amd64` and `linux/arm64`
+  under the same tags and one signature, so a Raspberry Pi 4 or 5 on a 64-bit OS runs a container
+  probe from the same `docker run`. Nothing changes on x86: Docker picks the image for its platform.
+
 ## [probe/v7.0.32-r17] - 2026-11-03
 
 ### Added
