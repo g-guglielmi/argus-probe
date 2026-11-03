@@ -292,22 +292,27 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
     CERT_END=$(cert_end "$CRT")
     CERT_NEXT_TRY=0
     RENEW_URL=$(printf '%s' "$CHECKIN_URL" | sed 's#/checkin$#/renew-cert#')
-    # The public address (checkin.sh, public_ip): looked up every half hour and when the probe's own
-    # address changes, sent with the report right after.
+    # The public address (checkin.sh, public_ip): looked up every hour and when the probe's own
+    # address changes. Every report carries the last one found and its age, so a lost report (or a
+    # core that wasn't listening yet) costs nothing; a failed lookup keeps the last one.
+    PUB_IP=""
+    PUB_AT=0
     PUB_NEXT=0
     PUB_FOR=""
     umask 077   # a job file carries an SNMP community or a controller key
     while true; do
       OWN_IP=$(own_ip)
-      PUB_IP=""
       if [ "$(date +%s)" -ge "$PUB_NEXT" ] || [ "$OWN_IP" != "$PUB_FOR" ]; then
-        PUB_IP=$(public_ip)
+        _pub=$(public_ip)
+        if [ -n "$_pub" ]; then PUB_IP=$_pub; PUB_AT=$(date +%s); fi
         PUB_FOR=$OWN_IP
-        PUB_NEXT=$(( $(date +%s) + 1800 ))
+        PUB_NEXT=$(( $(date +%s) + 3600 ))
       fi
+      PUB_AGE=""
+      [ -n "$PUB_IP" ] && PUB_AGE=$(( $(date +%s) - PUB_AT ))
       RESP=$(curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
-        -d "$(checkin_body "$PROBE_VERSION" "$PROCS_JSON" "$PROCS_PINNED" "$CA_FP" "$CERT_END" "$OWN_IP" "$PUB_IP")" \
+        -d "$(checkin_body "$PROBE_VERSION" "$PROCS_JSON" "$PROCS_PINNED" "$CA_FP" "$CERT_END" "$OWN_IP" "$PUB_IP" "$PUB_AGE")" \
         "$CHECKIN_URL" 2>/dev/null || true)
       # A renewed monitoring CA (see checkin.sh): saved to ca.crt for the proxy's next start. A proxy
       # still on a CA that ends within 30 days restarts on the renewed one (Docker's restart policy

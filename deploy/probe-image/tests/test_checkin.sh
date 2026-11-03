@@ -66,11 +66,17 @@ check "ca reported" "$B" "$base and .ca == \"ab12\""
 B=$(checkin_body 7.0.31-r29 "$PROCS" "" "")
 check "no ca" "$B" "$base and (has(\"ca\") | not)"
 
-# The addresses: the own one every report, the public one only after a lookup.
-B=$(checkin_body 7.0.31-r29 "$PROCS" "" "ab12" "2031-08-10 08:23:27Z" "172.17.0.2" "203.0.113.10")
-check "addresses reported" "$B" "$base and .ip == \"172.17.0.2\" and .public_ip == \"203.0.113.10\" and .ca == \"ab12\""
-B=$(checkin_body 7.0.31-r29 "$PROCS" "" "" "" "172.17.0.2" "")
-check "no public lookup this time" "$B" "$base and .ip == \"172.17.0.2\" and (has(\"public_ip\") | not)"
+# The addresses: the own one, and the last public one found with its age.
+B=$(checkin_body 7.0.31-r29 "$PROCS" "" "ab12" "2031-08-10 08:23:27Z" "172.17.0.2" "203.0.113.10" 1200)
+check "addresses reported" "$B" "$base and .ip == \"172.17.0.2\" and .public_ip == \"203.0.113.10\" and .public_age == 1200 and .ca == \"ab12\""
+B=$(checkin_body 7.0.31-r29 "$PROCS" "" "" "" "172.17.0.2" "203.0.113.10" 0)
+check "a fresh lookup" "$B" "$base and .public_age == 0"
+for AGE in "" "12a" "-5" "007"; do
+  B=$(checkin_body 7.0.31-r29 "$PROCS" "" "" "" "172.17.0.2" "203.0.113.10" "$AGE")
+  check "age '$AGE' is left out, the rest stays" "$B" "$base and .public_ip == \"203.0.113.10\" and (has(\"public_age\") | not) and .procs.StartPollers == 5"
+done
+B=$(checkin_body 7.0.31-r29 "$PROCS" "" "" "" "172.17.0.2" "" 30)
+check "no public address yet" "$B" "$base and .ip == \"172.17.0.2\" and (has(\"public_ip\") | not) and (has(\"public_age\") | not)"
 B=$(checkin_body 7.0.31-r29 "$PROCS" "" "" "" "" "")
 check "no addresses" "$B" "$base and (has(\"ip\") | not) and (has(\"public_ip\") | not)"
 

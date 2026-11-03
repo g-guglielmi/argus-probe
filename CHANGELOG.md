@@ -18,6 +18,15 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r20] - 2026-11-04
+
+### Changed
+- **Every report carries the public address.** r19 sent it only with the report right after a
+  lookup, so a core that wasn't listening for it yet (or one lost report) left the Probes page
+  without it until the next lookup. Now every report carries the last address found, with its age
+  (`public_age`); a failed lookup keeps the last one. The lookup runs every hour instead of every
+  half hour, and still whenever the probe's own address changes.
+
 ## [probe/v7.0.32-r19] - 2026-11-03
 
 ### Added

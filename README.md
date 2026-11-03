@@ -103,11 +103,13 @@ container the load average is the whole host's.
 ## Addresses
 
 Each check-in reports the address the container reaches out from (`ip`, the source of its route to
-the internet) and, every half hour and whenever that changes, its public address (`public_ip`), from
-one HTTPS call to Cloudflare's trace at `1.1.1.1` (an IP, so no name to resolve). On Docker's bridge
-the container's own address is a 172.17.x one; Argus then shows the address it sees the report come
-from, the host's. A probe VM's hourly OS report adds the VM's LAN address and gateway (`lan`, from
-`ip -j route get`). The Probes page shows them under the probe's name (argus-core DESIGN 18).
+the internet) and the last public address found (`public_ip`, with its age in `public_age`). The
+lookup is one HTTPS call to Cloudflare's trace at `1.1.1.1` (an IP, so no name to resolve), every
+hour and whenever `ip` changes. On Docker's bridge the container's own address is a 172.17.x one;
+the argus-updater sidecar then reports the host's (its `host_lan`, read with the host's network when
+it starts and after each start of the proxy). A probe VM's hourly OS report adds the VM's LAN
+address and gateway (`lan`, from `ip -j route get`). The Probes page shows them under the probe's
+name (argus-core DESIGN 18).
 
 ## Images & releases
 
