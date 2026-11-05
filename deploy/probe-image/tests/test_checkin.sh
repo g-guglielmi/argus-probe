@@ -81,8 +81,18 @@ B=$(checkin_body 7.0.31-r29 "$PROCS" "" "" "" "" "")
 check "no addresses" "$B" "$base and (has(\"ip\") | not) and (has(\"public_ip\") | not)"
 
 # public_ip keeps only an address from the trace.
-curl() { printf 'fl=123\nh=1.1.1.1\nip=203.0.113.10\nts=1.2\n'; }
+curl() { printf 'fl=123\nh=1.1.1.1\nip=203.0.113.10\nts=1.2\nloc=IT\n'; }
 check "public lookup" "{\"ip\":\"$(public_ip)\"}" '.ip == "203.0.113.10"'
+# The trace's country rides with the address, two capitals only.
+TR=$(cf_trace)
+check "country from the trace" "{\"ip\":\"$(trace_ip "$TR")\",\"cc\":\"$(trace_cc "$TR")\"}" '.ip == "203.0.113.10" and .cc == "IT"'
+check "no country in a bad loc" "{\"cc\":\"$(trace_cc "$(printf 'ip=203.0.113.10\nloc=italy\n')")\"}" '.cc == ""'
+B=$(checkin_body 7.0.32-r21 '{}' '' '' '' 172.17.0.2 203.0.113.10 60 IT)
+check "country reported" "$B" '.public_ip == "203.0.113.10" and .public_cc == "IT"'
+B=$(checkin_body 7.0.32-r21 '{}' '' '' '' 172.17.0.2 203.0.113.10 60 'I"T')
+check "a bad country is left out" "$B" '.public_ip == "203.0.113.10" and (has("public_cc") | not)'
+B=$(checkin_body 7.0.32-r21 '{}' '' '' '' 172.17.0.2 '' '' IT)
+check "no country without an address" "$B" '(has("public_cc") | not)'
 curl() { printf '<html>blocked</html>\n'; }
 check "public lookup blocked" "{\"ip\":\"$(public_ip)\"}" '.ip == ""'
 curl() { return 7; }

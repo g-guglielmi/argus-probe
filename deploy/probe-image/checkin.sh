@@ -36,18 +36,27 @@ cpu_json() {
 # --- the probe's addresses ---
 # The Probes page shows each probe's LAN and public address (core probeaddrs.go). The report carries
 # the address this container reaches out from (on Docker's bridge a 172.17.x one; the argus-updater
-# sidecar then reports the host's) and the last public one found, with its age.
+# sidecar then reports the host's) and the last public one found, with its age and its country.
 
 # own_ip - the source address of this container's route to the internet; empty if unknown.
 own_ip() { ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }'; }
 
-# public_ip - this probe's public IPv4 address as Cloudflare's trace sees it: one HTTPS call to
-# 1.1.1.1, no name to resolve. Empty on any failure. The loop asks every hour and when own_ip
-# changes, not every minute.
-public_ip() {
-  curl -4 -sS -m 8 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | sed -n 's/^ip=//p' | head -n 1 \
+# cf_trace - Cloudflare's trace of this probe: one HTTPS call to 1.1.1.1, no name to resolve. Empty
+# on any failure. The loop asks every hour and when own_ip changes, not every minute.
+cf_trace() { curl -4 -sS -m 8 https://1.1.1.1/cdn-cgi/trace 2>/dev/null || true; }
+
+# trace_ip TRACE - the public IPv4 address in a trace; empty if there is none.
+trace_ip() {
+  printf '%s\n' "$1" | sed -n 's/^ip=//p' | head -n 1 \
     | grep -E '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' || true
 }
+
+# trace_cc TRACE - the country Cloudflare places that address in (loc=, two capital letters, the
+# Probes page's flag); empty if there is none.
+trace_cc() { printf '%s\n' "$1" | sed -n 's/^loc=//p' | head -n 1 | grep -E '^[A-Z]{2}$' || true; }
+
+# public_ip - this probe's public IPv4 address as Cloudflare's trace sees it; empty on any failure.
+public_ip() { trace_ip "$(cf_trace)"; }
 
 # json_ok TEXT - TEXT is one JSON value jq can read.
 json_ok() { [ -n "$1" ] && printf '%s' "$1" | jq -e 'true' >/dev/null 2>&1; }
@@ -58,20 +67,21 @@ json_ok() { [ -n "$1" ] && printf '%s' "$1" | jq -e 'true' >/dev/null 2>&1; }
 pinned_json() { jq -nc --arg p "$1" '$p | split(" ") | map(select(length > 0))'; }
 
 # checkin_body VERSION PROCS_JSON PINNED_NAMES [CA_FINGERPRINT] [CERT_END] [OWN_IP] [PUBLIC_IP]
-# [PUBLIC_AGE] - the minute report, always a JSON object. The CA's fingerprint, the certificate's end
-# and the addresses are left out when unknown; the public address's age (seconds since the lookup
-# found it) only when it is a number.
+# [PUBLIC_AGE] [PUBLIC_CC] - the minute report, always a JSON object. The CA's fingerprint, the
+# certificate's end and the addresses are left out when unknown; the public address's age (seconds
+# since the lookup found it) only when it is a number, its country only when it is two capitals.
 checkin_body() {
   _procs=$2; json_ok "$_procs" || _procs=null
   _pinned=$(pinned_json "$3" 2>/dev/null || true); json_ok "$_pinned" || _pinned=null
   _cpu=$(cpu_json 2>/dev/null || true); json_ok "$_cpu" || _cpu=null
   _age=${8:-}; case "$_age" in ''|*[!0-9]*|0[0-9]*) _age=null ;; esac
   jq -nc --arg v "$1" --argjson procs "$_procs" --argjson pinned "$_pinned" --argjson cpu "$_cpu" --arg ca "${4:-}" --arg end "${5:-}" \
-    --arg ip "${6:-}" --arg pub "${7:-}" --argjson age "$_age" \
+    --arg ip "${6:-}" --arg pub "${7:-}" --argjson age "$_age" --arg cc "${9:-}" \
     '{version:$v, scans:true, sweeps:true, diags:true, procs:$procs, procs_pinned:$pinned, cpu:$cpu}
      + (if $ca == "" then {} else {ca:$ca} end) + (if $end == "" then {} else {cert_end:$end} end)
      + (if $ip == "" then {} else {ip:$ip} end)
-     + (if $pub == "" then {} else {public_ip:$pub} + (if $age == null then {} else {public_age:$age} end) end)' 2>/dev/null \
+     + (if $pub == "" then {} else {public_ip:$pub} + (if $age == null then {} else {public_age:$age} end)
+        + (if ($cc | test("^[A-Z]{2}$")) then {public_cc:$cc} else {} end) end)' 2>/dev/null \
     || jq -nc --arg v "$1" '{version:$v, scans:true, sweeps:true, diags:true}'
 }
 

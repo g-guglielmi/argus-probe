@@ -296,6 +296,7 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
     # address changes. Every report carries the last one found and its age, so a lost report (or a
     # core that wasn't listening yet) costs nothing; a failed lookup keeps the last one.
     PUB_IP=""
+    PUB_CC=""
     PUB_AT=0
     PUB_NEXT=0
     PUB_FOR=""
@@ -303,8 +304,9 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
     while true; do
       OWN_IP=$(own_ip)
       if [ "$(date +%s)" -ge "$PUB_NEXT" ] || [ "$OWN_IP" != "$PUB_FOR" ]; then
-        _pub=$(public_ip)
-        if [ -n "$_pub" ]; then PUB_IP=$_pub; PUB_AT=$(date +%s); fi
+        _trace=$(cf_trace)
+        _pub=$(trace_ip "$_trace")
+        if [ -n "$_pub" ]; then PUB_IP=$_pub; PUB_CC=$(trace_cc "$_trace"); PUB_AT=$(date +%s); fi
         PUB_FOR=$OWN_IP
         PUB_NEXT=$(( $(date +%s) + 3600 ))
       fi
@@ -312,7 +314,7 @@ if [ -n "${PROBE_TOKEN:-}" ] && [ -n "${CHECKIN_URL:-}" ]; then
       [ -n "$PUB_IP" ] && PUB_AGE=$(( $(date +%s) - PUB_AT ))
       RESP=$(curl -sS -m 15 \
         -H "Authorization: Bearer $PROBE_TOKEN" -H 'Content-Type: application/json' \
-        -d "$(checkin_body "$PROBE_VERSION" "$PROCS_JSON" "$PROCS_PINNED" "$CA_FP" "$CERT_END" "$OWN_IP" "$PUB_IP" "$PUB_AGE")" \
+        -d "$(checkin_body "$PROBE_VERSION" "$PROCS_JSON" "$PROCS_PINNED" "$CA_FP" "$CERT_END" "$OWN_IP" "$PUB_IP" "$PUB_AGE" "$PUB_CC")" \
         "$CHECKIN_URL" 2>/dev/null || true)
       # A renewed monitoring CA (see checkin.sh): saved to ca.crt for the proxy's next start. A proxy
       # still on a CA that ends within 30 days restarts on the renewed one (Docker's restart policy

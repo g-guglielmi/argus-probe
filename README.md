@@ -103,7 +103,8 @@ container the load average is the whole host's.
 ## Addresses
 
 Each check-in reports the address the container reaches out from (`ip`, the source of its route to
-the internet) and the last public address found (`public_ip`, with its age in `public_age`). The
+the internet) and the last public address found (`public_ip`, with its age in `public_age` and its
+country in `public_cc`, Cloudflare's `loc=`). The
 lookup is one HTTPS call to Cloudflare's trace at `1.1.1.1` (an IP, so no name to resolve), every
 hour and whenever `ip` changes. On Docker's bridge the container's own address is a 172.17.x one;
 the argus-updater sidecar then reports the host's (its `host_lan`, read with the host's network when

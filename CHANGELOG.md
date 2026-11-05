@@ -18,6 +18,13 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r21] - 2026-11-05
+
+### Added
+- **The public address's country.** The hourly lookup already reads Cloudflare's trace; its country
+  (`loc=`, two capital letters) now rides every report with the address, as `public_cc`, for the
+  flag beside the public address on the Probes page (argus-core). Still one call an hour.
+
 ## [probe/v7.0.32-r20] - 2026-11-04
 
 ### Changed
