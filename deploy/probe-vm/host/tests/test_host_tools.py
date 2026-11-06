@@ -97,7 +97,87 @@ class OSReportTest(unittest.TestCase):
                 if text is not None:
                     with open(path, "w", encoding="utf-8", newline="\n") as fh:
                         fh.write(text)
-            self.assertEqual(mod.os_name(rel, deb), want, release)
+            self.assertEqual(mod.os_name(rel, deb, os.path.join(tmp, "no-dietpi")), want, release)
+
+    def load(self):
+        loader = importlib.machinery.SourceFileLoader("argus_os_report", os.path.join(HOST, "argus-os-report"))
+        spec = importlib.util.spec_from_loader("argus_os_report", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        return mod
+
+    def write(self, path, text):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+
+    def test_dietpi_names_itself_and_its_debian(self):
+        mod = self.load()
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        rel, ver = os.path.join(tmp, "os-release"), os.path.join(tmp, ".version")
+        self.write(rel, DEBIAN_13)
+        self.write(ver, "G_DIETPI_VERSION_CORE=10\nG_DIETPI_VERSION_SUB=8\nG_DIETPI_VERSION_RC=1\nG_GITBRANCH='master'\n")
+        self.assertEqual(mod.os_name(rel, os.path.join(tmp, "none"), ver), "DietPi 10.8 (Debian 13.7)")
+        self.write(ver, "G_DIETPI_VERSION_CORE=x\n")
+        self.assertEqual(mod.os_name(rel, os.path.join(tmp, "none"), ver), "Debian 13.7")
+
+    def test_a_waiting_dietpi_release(self):
+        mod = self.load()
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        flag = os.path.join(tmp, ".update_available")
+        self.assertEqual(mod.dietpi_update(flag), "")
+        for text, want in (("10.9.0\n", "10.9.0"), ("-1\n", ""), ("rm -rf /\n", "")):
+            self.write(flag, text)
+            self.assertEqual(mod.dietpi_update(flag), want, text)
+
+    def test_the_count_takes_security_and_raspberry_pi(self):
+        mod = self.load()
+        out = ("Inst libc6 [2.41-12] (2.41-12+deb13u1 Debian-Security:13/stable-security [arm64])\n"
+               "Inst linux-image-rpi-v8 [1:6.12.47-1+rpt1] (1:6.12.62-1+rpt1 Raspberry Pi Foundation:stable [arm64])\n"
+               "Inst curl [8.14.1-2] (8.14.1-2+deb13u2 Debian:13.8/stable [arm64])\n"
+               "Conf libc6 (2.41-12+deb13u1 Debian-Security:13/stable-security [arm64])\n")
+        self.assertEqual(mod.count_updates(out), 2)
+
+    def test_a_reboot_is_needed_when(self):
+        mod = self.load()
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        flag, modules, boot = os.path.join(tmp, "reboot-required"), os.path.join(tmp, "modules"), os.path.join(tmp, "boot")
+        for d in (modules, boot):
+            os.makedirs(d)
+
+        def kernels(*names):
+            for d in (modules, boot):
+                for n in os.listdir(d):
+                    p = os.path.join(d, n)
+                    shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+            for n in names:
+                os.makedirs(os.path.join(modules, n))
+                open(os.path.join(boot, "vmlinuz-" + n), "w").close()
+
+        def why(running):
+            return mod.reboot_reason(flag, modules, boot, running)
+
+        kernels("6.12.47+rpt-rpi-v8", "6.12.47+rpt-rpi-2712")
+        self.assertEqual(why("6.12.47+rpt-rpi-v8"), "", "up to date")
+        open(flag, "w").close()
+        self.assertEqual(why("6.12.47+rpt-rpi-v8"), "an update asks for it")
+        os.remove(flag)
+        kernels("6.12.62+rpt-rpi-v8", "6.12.62+rpt-rpi-2712")
+        self.assertEqual(why("6.12.47+rpt-rpi-v8"), "the running kernel was removed")
+        kernels("6.12.47+rpt-rpi-v8", "6.12.62+rpt-rpi-v8")
+        self.assertEqual(why("6.12.47+rpt-rpi-v8"), "a newer kernel is installed")
+        kernels("6.12.47+rpt-rpi-v8", "6.12.62+rpt-rpi-2712")
+        self.assertEqual(why("6.12.47+rpt-rpi-v8"), "", "another flavour's newer kernel is not this one's")
+        kernels("6.12.48+deb13-amd64", "6.12.57+deb13-amd64")
+        self.assertEqual(why("6.12.57+deb13-amd64"), "", "an older kernel kept beside the running one")
+        self.assertEqual(why("6.12.48+deb13-amd64"), "a newer kernel is installed")
+        kernels("6.1.0-25-amd64", "6.1.0-26-amd64")
+        self.assertEqual(why("6.1.0-25-amd64"), "a newer kernel is installed", "Debian 12's ABI numbers")
+        kernels()
+        self.assertEqual(why("6.12.48+deb13-amd64"), "", "no modules folder at all (a container) says nothing")
 
 
 class LANTest(unittest.TestCase):
@@ -238,6 +318,9 @@ class RebootCheckTest(unittest.TestCase):
         self.stub("date", 'echo "TZ=${TZ:-}" >> "%s"; case "$1" in +%%w) echo 0;; +%%-H) echo 3;; +%%-M) echo 2;; *) echo 1700000000;; esac' % self.log)
         self.stub("systemctl", 'echo "systemctl $*" >> "%s"' % self.log)
         self.stub("logger", ':')
+        # The reporter's broader test (--reboot-needed): says no unless a test says otherwise.
+        self.report_says = os.path.join(self.tmp, "report-says-yes")
+        self.stub("argus-os-report", '[ "$1" = --reboot-needed ] && [ -f "%s" ] && { echo "a newer kernel is installed"; exit 0; }; [ "$1" = --reboot-needed ] && exit 1; echo report >> "%s"' % (self.report_says.replace("\\", "/"), self.log.replace("\\", "/")))
 
     def stub(self, name, body):
         path = os.path.join(self.bin, name)
@@ -254,7 +337,7 @@ class RebootCheckTest(unittest.TestCase):
         stubs = self.bin
         if os.name == "nt":  # Git Bash: a drive letter's colon would split its PATH
             stubs = subprocess.run(["cygpath", "-u", stubs], capture_output=True, text=True).stdout.strip()
-        env = dict(os.environ, ARGUS_STUBS=stubs, ARGUS_STATE_DIR=self.state,
+        env = dict(os.environ, ARGUS_STUBS=stubs, ARGUS_STATE_DIR=self.state, ARGUS_OS_REPORT="argus-os-report",
                    ARGUS_REBOOT_FLAG=self.flag, ARGUS_UU_REBOOT_CONF=os.path.join(self.tmp, "53argus"), ARGUS_ZONEINFO=self.zones)
         r = subprocess.run([shutil.which("bash"), "-c", 'PATH="$ARGUS_STUBS:$PATH" exec bash "$0"', os.path.join(HOST, "argus-reboot-check")],
                            env=env, capture_output=True, text=True)
@@ -303,6 +386,86 @@ class RebootCheckTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.state, "reboot-request.json")))
         with open(os.path.join(self.state, "reboot-result.json")) as fh:
             self.assertEqual(json.load(fh)["state"], "rebooting")
+
+    def test_reboot_now_without_a_need_reports_again(self):
+        open(os.path.join(self.state, "reboot-request.json"), "w").close()
+        calls = self.run_check({"mode": "notify", "weekday": 0, "hour": 0, "minute": 0}, needs_reboot=False)
+        self.assertNotIn("systemctl", calls)
+        self.assertIn("report", calls)
+        with open(os.path.join(self.state, "reboot-result.json")) as fh:
+            self.assertEqual(json.load(fh)["state"], "done")
+
+    def test_a_newer_kernel_without_the_flag_reboots_in_the_window(self):
+        open(self.report_says, "w").close()
+        self.assertIn("systemctl reboot", self.run_check({"mode": "auto", "weekday": -1, "hour": 3, "minute": 0}, needs_reboot=False))
+        os.remove(self.log)
+        self.assertNotIn("systemctl", self.run_check({"mode": "auto", "weekday": 1, "hour": 3, "minute": 0}, needs_reboot=False))
+
+
+@unittest.skipUnless(shutil.which("bash"), "needs bash")
+class PatchTest(unittest.TestCase):
+    """argus-patch: the security updates, then a waiting DietPi release on a DietPi host."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.state = os.path.join(self.tmp, "state")
+        self.bin = os.path.join(self.tmp, "bin")
+        for d in (self.state, self.bin):
+            os.makedirs(d)
+        self.log = os.path.join(self.tmp, "calls").replace("\\", "/")
+        self.flag = os.path.join(self.tmp, "update_available")
+        self.stub("unattended-upgrade", 'echo uu >> "%s"; exit "${UU_EXIT:-0}"' % self.log)
+        self.stub("dietpi-update", 'echo "dietpi-update $*" >> "%s"; exit "${DP_EXIT:-0}"' % self.log)
+        self.stub("argus-os-report", ':')
+        self.stub("logger", 'cat >/dev/null 2>&1; :')
+
+    def stub(self, name, body):
+        path = os.path.join(self.bin, name)
+        with open(path, "w", newline="\n") as fh:
+            fh.write("#!/usr/bin/env bash\n" + body + "\n")
+        os.chmod(path, 0o755)
+
+    def run_patch(self, dietpi=None, **env_extra):
+        open(os.path.join(self.state, "patch-request.json"), "w").close()
+        if dietpi is not None:
+            with open(self.flag, "w", newline="\n") as fh:
+                fh.write(dietpi)
+        stubs = self.bin
+        if os.name == "nt":
+            stubs = subprocess.run(["cygpath", "-u", stubs], capture_output=True, text=True).stdout.strip()
+        env = dict(os.environ, ARGUS_STUBS=stubs, ARGUS_STATE_DIR=self.state, ARGUS_DIETPI_FLAG=self.flag.replace("\\", "/"),
+                   ARGUS_DIETPI_UPDATE=stubs + "/dietpi-update", ARGUS_OS_REPORT="argus-os-report", **env_extra)
+        r = subprocess.run([shutil.which("bash"), "-c", 'PATH="$ARGUS_STUBS:$PATH" exec bash "$0"', os.path.join(HOST, "argus-patch")],
+                           env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.state, "patch-result.json")) as fh:
+            res = json.load(fh)
+        try:
+            with open(self.log) as fh:
+                calls = fh.read()
+        except FileNotFoundError:
+            calls = ""
+        return res, calls
+
+    def test_a_vm_runs_the_security_updates_only(self):
+        res, calls = self.run_patch()
+        self.assertEqual((res["state"], res["detail"]), ("done", "security updates applied"))
+        self.assertNotIn("dietpi-update", calls)
+
+    def test_a_dietpi_host_takes_the_waiting_release(self):
+        res, calls = self.run_patch("10.9.0\n")
+        self.assertIn("dietpi-update 1", calls)
+        self.assertEqual((res["state"], res["detail"]), ("done", "security updates and DietPi 10.9.0 applied"))
+
+    def test_a_failed_dietpi_update_is_a_failure(self):
+        res, _ = self.run_patch("10.9.0\n", DP_EXIT="1")
+        self.assertEqual(res["state"], "failed")
+        self.assertIn("DietPi 10.9.0 was not", res["detail"])
+
+    def test_a_failed_apt_run_is_a_failure(self):
+        res, _ = self.run_patch(UU_EXIT="2")
+        self.assertEqual(res["state"], "failed")
 
 
 if __name__ == "__main__":

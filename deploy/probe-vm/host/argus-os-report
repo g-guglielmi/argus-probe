@@ -21,6 +21,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.request
 
@@ -43,9 +44,19 @@ def read_kv(path):
     return out
 
 
+def count_updates(out):
+    """The updates the automatic patching applies, from a simulated upgrade's Inst lines: a *-security
+    suite, and on a Raspberry Pi DietPi probe everything from Raspberry Pi's own repository (its kernel
+    and firmware: that repository has no security suite, so the patching takes all of it)."""
+    n = 0
+    for line in out.splitlines():
+        if line.startswith("Inst") and re.search(r"[Ss]ecurity|Raspberry Pi", line):
+            n += 1
+    return n
+
+
 def sec_updates():
-    """Count pending SECURITY updates (best-effort). A simulated upgrade lists the packages apt would
-    install; the ones whose source archive is a *-security suite are the security updates. -1 = unknown."""
+    """Count pending SECURITY updates (best-effort; count_updates). -1 = unknown."""
     try:
         out = subprocess.run(
             ["apt-get", "-s", "-o", "Debug::NoLocking=true", "upgrade"],
@@ -53,16 +64,12 @@ def sec_updates():
         ).stdout
     except Exception:
         return -1
-    n = 0
-    for line in out.splitlines():
-        if line.startswith("Inst") and re.search(r"[Ss]ecurity", line):
-            n += 1
-    return n
+    return count_updates(out)
 
 
-def os_name(release="/etc/os-release", debian="/etc/debian_version"):
-    """The OS as Argus shows it: Debian with its point release ("Debian 13.7", from DEBIAN_VERSION_FULL,
-    or /etc/debian_version before Debian 13 added it), anything else by its PRETTY_NAME. "" if unreadable."""
+def debian_name(release="/etc/os-release", debian="/etc/debian_version"):
+    """Debian with its point release ("Debian 13.7", from DEBIAN_VERSION_FULL, or /etc/debian_version
+    before Debian 13 added it), anything else by its PRETTY_NAME. "" if unreadable."""
     kv = {k: v.strip('"').strip("'") for k, v in read_kv(release).items()}
     if kv.get("ID") == "debian":
         v = kv.get("DEBIAN_VERSION_FULL", "")
@@ -75,6 +82,77 @@ def os_name(release="/etc/os-release", debian="/etc/debian_version"):
         if re.fullmatch(r"[0-9][0-9.]*", v):  # testing and sid read "forky/sid": those keep the pretty name
             return "Debian " + v
     return kv.get("PRETTY_NAME", "")
+
+
+def dietpi_version(path="/boot/dietpi/.version"):
+    """DietPi's own version ("10.8"), "" when this host is not DietPi."""
+    kv = {k: v.strip('"').strip("'") for k, v in read_kv(path).items()}
+    core, sub = kv.get("G_DIETPI_VERSION_CORE", ""), kv.get("G_DIETPI_VERSION_SUB", "")
+    if re.fullmatch(r"[0-9]+", core) and re.fullmatch(r"[0-9]+", sub):
+        return core + "." + sub
+    return ""
+
+
+def os_name(release="/etc/os-release", debian="/etc/debian_version", dietpi="/boot/dietpi/.version"):
+    """The OS as Argus shows it: "Debian 13.7", or on a DietPi probe (a Raspberry Pi or a mini PC)
+    "DietPi 10.8 (Debian 13.7)"."""
+    base = debian_name(release, debian)
+    dp = dietpi_version(dietpi)
+    if dp:
+        return "DietPi %s (%s)" % (dp, base) if base else "DietPi " + dp
+    return base
+
+
+def dietpi_update(path="/run/dietpi/.update_available"):
+    """The DietPi release waiting to be applied ("10.9.0"), which DietPi's own daily check leaves in
+    /run; "" when there is none (or the host is not DietPi). Patch now applies it."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            v = fh.read().strip()
+    except OSError:
+        return ""
+    return v if re.fullmatch(r"[0-9]+(\.[0-9]+){1,2}", v) else ""
+
+
+def _kernel_flavour(release):
+    """A kernel release split into its version and flavour: "6.12.48+deb13-amd64" -> ("6.12.48+deb13",
+    "amd64"), "6.12.47+rpt-rpi-v8" -> ("6.12.47+rpt", "rpi-v8"), Debian 12's "6.1.0-25-amd64" ->
+    ("6.1.0-25", "amd64"); None when it doesn't read like one."""
+    m = re.fullmatch(r"([0-9][0-9.]*(?:-[0-9]+)?(?:[+~][A-Za-z0-9.~+]*)?)-([A-Za-z][A-Za-z0-9-]*)", release)
+    return (m.group(1), m.group(2)) if m else None
+
+
+def _version_key(v):
+    return [int(x) for x in re.findall(r"[0-9]+", v)]
+
+
+def reboot_reason(flag="/var/run/reboot-required", modules="/lib/modules", boot="/boot", running=None):
+    """Why this host needs a reboot, "" when it doesn't. Any of: the reboot-required flag (written by the
+    kernel postinst hook unattended-upgrades ships, and by needrestart and other packages); the running
+    kernel's modules are gone (it was upgraded in place: DietPi's own test); a newer kernel of the
+    running flavour is installed than the one running (a kernel package that doesn't set the flag)."""
+    if os.path.exists(flag):
+        return "an update asks for it"
+    running = running or os.uname().release
+    try:
+        installed = os.listdir(modules)
+    except OSError:
+        installed = []
+    if installed and running not in installed:
+        return "the running kernel was removed"
+    mine = _kernel_flavour(running)
+    if mine:
+        try:
+            names = os.listdir(boot)
+        except OSError:
+            names = []
+        for name in names:
+            if not name.startswith("vmlinuz-"):
+                continue
+            other = _kernel_flavour(name[len("vmlinuz-"):])
+            if other and other[1] == mine[1] and _version_key(other[0]) > _version_key(mine[0]):
+                return "a newer kernel is installed"
+    return ""
 
 
 def lan(run=subprocess.run):
@@ -131,16 +209,30 @@ def write_status(status):
         pass
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv == ["--reboot-needed"]:
+        # argus-reboot-check asks: exit 0 (and why) when the host needs a reboot, 1 when it doesn't.
+        why = reboot_reason()
+        if why:
+            print(why)
+            return 0
+        return 1
+    why = reboot_reason()
     status = {
         "sec_updates": sec_updates(),
-        "reboot_required": os.path.exists("/var/run/reboot-required"),
+        "reboot_required": bool(why),
         "os": os_name(),
         "reported_at": int(time.time()),
         "reboot_now": True,
         "patch_now": True,
         "booted_at": booted_at(),
     }
+    if why:
+        status["reboot_why"] = why
+    dp = dietpi_update()
+    if dp:
+        status["dietpi_update"] = dp
     for kind in ("reboot", "patch"):
         r = last_result(kind + "-result.json")
         if r:
@@ -155,7 +247,8 @@ def main():
         return 0  # not enrolled yet - nothing to post
     url = checkin.rsplit("/", 1)[0] + "/os-status"  # .../api/probes/checkin -> .../api/probes/os-status
     body = json.dumps({k: status[k] for k in ("sec_updates", "reboot_required", "os", "reboot_now", "patch_now",
-                                              "booted_at", "reboot", "patch", "lan") if k in status}).encode("utf-8")
+                                              "booted_at", "reboot", "patch", "lan", "reboot_why",
+                                              "dietpi_update") if k in status}).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"Authorization": "Bearer " + token,
                                           "Content-Type": "application/json"})

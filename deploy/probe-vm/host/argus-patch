@@ -21,9 +21,26 @@ result() {
 }
 logger -t argus-patch "applying the pending security updates on request from Argus"
 DEBIAN_FRONTEND=noninteractive unattended-upgrade -v 2>&1 | logger -t argus-patch
-if [ "${PIPESTATUS[0]}" -eq 0 ]; then
-  result done "security updates applied"
-else
-  result failed "unattended-upgrade reported a problem: journalctl -t argus-patch on the probe VM has the details"
+uu=${PIPESTATUS[0]}
+# A DietPi probe host (a Raspberry Pi or a mini PC) also takes a waiting DietPi release: DietPi's own
+# daily check leaves its version in /run/dietpi/.update_available, "dietpi-update 1" applies it
+# without questions.
+DP="${ARGUS_DIETPI_UPDATE:-/boot/dietpi/dietpi-update}"
+DPFLAG="${ARGUS_DIETPI_FLAG:-/run/dietpi/.update_available}"
+dp=0; dpv=""
+if [ -x "$DP" ] && [ -s "$DPFLAG" ]; then
+  dpv="$(head -c 32 "$DPFLAG" | tr -cd '0-9.')"
+  logger -t argus-patch "applying DietPi $dpv"
+  "$DP" 1 2>&1 | logger -t argus-patch
+  dp=${PIPESTATUS[0]}
 fi
-ARGUS_STATE_DIR="$DIR" /usr/local/sbin/argus-os-report || true
+if [ "$uu" -ne 0 ]; then
+  result failed "unattended-upgrade reported a problem: journalctl -t argus-patch on the probe host has the details"
+elif [ "$dp" -ne 0 ]; then
+  result failed "the security updates were applied, DietPi $dpv was not: journalctl -t argus-patch on the probe host has the details"
+elif [ -n "$dpv" ]; then
+  result done "security updates and DietPi $dpv applied"
+else
+  result done "security updates applied"
+fi
+ARGUS_STATE_DIR="$DIR" "${ARGUS_OS_REPORT:-/usr/local/sbin/argus-os-report}" || true

@@ -30,6 +30,21 @@ listed together newest first, each section headed by its exact release tag:
   first boot. Nothing is written before Enter on the disk it shows. CI boots it in QEMU against a
   blank disk on every change.
 
+## [probe/v7.0.32-r22] - 2026-11-06
+
+### Added
+- **The host tools on a DietPi probe** (a Raspberry Pi or a mini PC, argus-core DESIGN 14a). The OS
+  reads **"DietPi 10.8 (Debian 13.7)"**; a DietPi release waiting to be applied rides the report as
+  `dietpi_update`, and **Patch now** applies it (`dietpi-update 1`) after the security updates. On a
+  Pi the update count also takes Raspberry Pi's own repository (its kernel and firmware), which the
+  patching applies there.
+
+### Changed
+- **A pending reboot is found more ways**, on a VM too: besides `/var/run/reboot-required`, the
+  running kernel's modules being gone (upgraded in place) or a newer kernel of the running flavour
+  installed than the one running. The reboot check asks the reporter (`--reboot-needed`), and the
+  report carries why (`reboot_why`). The results say "probe host" instead of "probe VM".
+
 ## [probe/v7.0.32-r21] - 2026-11-05
 
 ### Added

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 g-guglielmi
 
-# argus-reboot-check - a probe VM reboots only when an update needs it, in its reboot window (Argus
+# argus-reboot-check - a probe VM (or a DietPi probe host) reboots only when an update needs it, in its reboot window (Argus
 # DESIGN 14c). Argus hands the window to the probe at its minute check-in and the proxy container
 # keeps it in the data folder as reboot-window.json: auto or notify only, a day (-1 = every day) and
 # a time on the core's clock (tz), so 03:00 is one moment at every site. Without the file (an older
@@ -34,20 +34,25 @@ result() {
   printf '{"state":"%s","at":%d,"why":"%s","detail":"%s"}\n' "$1" "$(date +%s)" "$why" "$2" > "$tmp"
   mv -f "$tmp" "$RES"; chmod 0644 "$RES"
 }
+# Whether the OS needs a reboot: the reboot-required flag, else what the reporter finds (the running
+# kernel's modules gone, a newer kernel of its flavour installed: a DietPi host's kernel packages may
+# not set the flag).
+REPORT="${ARGUS_OS_REPORT:-/usr/local/sbin/argus-os-report}"
+needs_reboot() { [ -f "$RR" ] || "$REPORT" --reboot-needed >/dev/null 2>&1; }
 if [ -f "$REQ" ]; then
   why="request"
   rm -f "$REQ"
-  if [ -f "$RR" ]; then
-    logger -t argus-reboot "rebooting the probe VM on request from Argus"
-    result rebooting "rebooting the probe VM"
+  if needs_reboot; then
+    logger -t argus-reboot "rebooting the probe host on request from Argus"
+    result rebooting "rebooting the probe host"
     systemctl reboot
   else
     result done "no reboot is needed"
-    /usr/local/sbin/argus-os-report || true
+    "$REPORT" || true
   fi
   exit 0
 fi
-[ -f "$RR" ] || exit 0
+needs_reboot || exit 0
 
 mode=auto; wd=-1; wh=3; wm=0; tz=""
 if [ -f "$WIN" ]; then
@@ -70,7 +75,7 @@ now_wd="$(clock +%w)"; now_h="$(clock +%-H)"; now_m="$(clock +%-M)"
 # The timer fires every 5 min; reboot within a 10-minute slack of the target minute.
 if [ "$now_m" -ge "$wm" ] && [ "$now_m" -lt $((wm + 10)) ]; then
   why="window"
-  logger -t argus-reboot "OS reboot-required in the reboot window; rebooting the probe VM"
-  result rebooting "rebooting the probe VM in its window"
+  logger -t argus-reboot "the OS needs a reboot and this is the reboot window; rebooting the probe host"
+  result rebooting "rebooting the probe host in its window"
   systemctl reboot
 fi
