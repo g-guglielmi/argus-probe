@@ -46,11 +46,12 @@ def read_kv(path):
 
 def count_updates(out):
     """The updates the automatic patching applies, from a simulated upgrade's Inst lines: a *-security
-    suite, and on a Raspberry Pi DietPi probe everything from Raspberry Pi's own repository (its kernel
-    and firmware: that repository has no security suite, so the patching takes all of it)."""
+    suite, and on a DietPi probe everything from the repositories its board's kernel and firmware come
+    from: Raspberry Pi's on a Pi, DietPi's own (label "DietPi") on a NanoPi and wherever it is set up.
+    Neither has a security suite, so the patching takes all of them."""
     n = 0
     for line in out.splitlines():
-        if line.startswith("Inst") and re.search(r"[Ss]ecurity|Raspberry Pi", line):
+        if line.startswith("Inst") and re.search(r"[Ss]ecurity|Raspberry Pi|[ (]DietPi:", line):
             n += 1
     return n
 

@@ -20,6 +20,15 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r23] - 2026-11-06
+
+### Changed
+- **NanoPi boards on DietPi count their kernel updates** (argus-core DESIGN 14a: the NanoPi NEO3, and
+  the NEO3 Plus on DietPi's NanoPi Zero2 image). DietPi ships their kernel and bootloader from its own
+  repository (label "DietPi"), which Argus's kit script now has the patching take wherever a box has
+  it set up; the OS report counts its pending packages with the security updates, as it already did
+  for Raspberry Pi's repository on a Pi.
+
 ## [installer/v0.1.0] - 2026-11-06
 
 ### Added

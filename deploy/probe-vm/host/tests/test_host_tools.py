@@ -137,8 +137,10 @@ class OSReportTest(unittest.TestCase):
         out = ("Inst libc6 [2.41-12] (2.41-12+deb13u1 Debian-Security:13/stable-security [arm64])\n"
                "Inst linux-image-rpi-v8 [1:6.12.47-1+rpt1] (1:6.12.62-1+rpt1 Raspberry Pi Foundation:stable [arm64])\n"
                "Inst curl [8.14.1-2] (8.14.1-2+deb13u2 Debian:13.8/stable [arm64])\n"
+               "Inst linux-image-current-rockchip64 [25.11.1] (25.11.2 DietPi:all [arm64])\n"
+               "Inst dietpi-tools [1.0] (1.1 Debian:13.8/stable [arm64])\n"
                "Conf libc6 (2.41-12+deb13u1 Debian-Security:13/stable-security [arm64])\n")
-        self.assertEqual(mod.count_updates(out), 2)
+        self.assertEqual(mod.count_updates(out), 3, "security, Raspberry Pi and DietPi's own repository; not a plain Debian update")
 
     def test_a_reboot_is_needed_when(self):
         mod = self.load()
