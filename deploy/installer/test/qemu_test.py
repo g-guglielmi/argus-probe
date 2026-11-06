@@ -21,6 +21,7 @@ import tempfile
 import time
 
 MiB = 1024 * 1024
+os.environ["MTOOLS_SKIP_CHECK"] = "1"  # image files have no real disk geometry to check against
 DIETPI_TXT = (
     "# DietPi-Automation settings\n"
     "AUTO_SETUP_AUTOMATED=0\n"

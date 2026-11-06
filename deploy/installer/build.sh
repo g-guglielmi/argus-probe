@@ -13,6 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 VERSION="${1:-dev}"
+export MTOOLS_SKIP_CHECK=1  # image files have no real disk geometry to check against
 ALPINE="${ALPINE_IMAGE:-alpine:3.22}"
 WORK="$PWD/work"
 OUT="$PWD/output"
@@ -57,6 +58,8 @@ docker run --rm -v "$WORK:/work" "$ALPINE" sh -euc '
 '
 KV="$(cat "$WORK/kver")"
 echo "    kernel $KV"
+# docker ran as root: hand the tree back before writing into it (cpio reads it too).
+sudo chown -R "$(id -u):$(id -g)" "$WORK"
 
 echo "==> /init and its files"
 R="$WORK/root"
@@ -64,8 +67,6 @@ install -m 0755 init "$R/init"
 install -D -m 0644 apply-kit-lines.awk "$R/usr/share/argus/apply-kit-lines.awk"
 printf '%s\n' "$VERSION" > "$R/etc/argus-installer.version"
 mkdir -p "$R/proc" "$R/sys" "$R/dev" "$R/run" "$R/tmp" "$R/mnt"
-# docker ran as root: hand the tree back so cpio can read it.
-sudo chown -R "$(id -u):$(id -g)" "$WORK"
 
 echo "==> initramfs"
 ( cd "$R" && find . -print0 | sort -z | cpio --null -o -H newc --owner 0:0 --quiet ) \
