@@ -11,6 +11,9 @@ Zabbix active proxy, in two delivery formats that share one enrollment flow:
 - **`deploy/probe-vm/`** - the **self-configuring golden VM** (Packer). A Debian image that runs the
   `argus-probe` container and self-enrolls on first boot (cloud-init or a first-boot setup page).
   Published as `probe-vm/vX.Y.Z` releases (qcow2 + VHD).
+- **`deploy/installer/`** - the **Argus probe installer** USB stick: a small UEFI live system that
+  writes DietPi's mini PC image to the disk and applies a probe kit from Argus (DietPi method in Add
+  probe). Published as `installer/vX.Y.Z` releases.
 
 The VM is a delivery wrapper around the same container - that's why they live together here.
 
@@ -119,6 +122,9 @@ name (argus-core DESIGN 18).
 - Container **revisions** are also cut as GitHub Releases `probe/v<zabbix>-r<n>`, tracking the Zabbix base version (decoupled from the app's semver).
 - Golden VM: GitHub Releases tagged `probe-vm/vX.Y.Z` (built by `.github/workflows/probe-vm.yml` on a
   `probe-vm/v*` tag or manual dispatch).
+- Installer stick: GitHub Releases tagged `installer/vX.Y.Z` (built and booted in QEMU by
+  `.github/workflows/installer.yml` on every change; published on an `installer/v*` tag, which needs
+  its CHANGELOG section).
 - What changed in each release is in [CHANGELOG.md](CHANGELOG.md), which also feeds the Release
   notes. A `probe-vm/v*` tag needs its section first (the build fails without it); a probe-image
   release uses its section when present and otherwise lists the commits since the previous probe

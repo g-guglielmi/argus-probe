@@ -13,10 +13,22 @@ listed together newest first, each section headed by its exact release tag:
   probe tag instead.
 - **Probe VM** `probe-vm/vX.Y.Z` - the self-configuring golden image. Released by pushing the tag;
   the build fails early if its section below is missing.
+- **Installer** `installer/vX.Y.Z` - the USB stick that puts DietPi and a probe kit on a mini PC.
+  Released by pushing the tag, like the probe VM.
 
 ---
 
 ## [Unreleased]
+
+## [installer/v0.1.0] - 2026-11-06
+
+### Added
+- **The Argus probe installer stick** (`deploy/installer/`, argus-core DESIGN 14a). A small UEFI
+  live system on a FAT32 stick that writes DietPi's mini PC image (added by the user, not bundled)
+  to the internal disk, checks the copy, sets the probe kit's lines in DietPi's `dietpi.txt` and puts
+  its `Automation_Custom_Script.sh` beside it, then marks the kit used and restarts into DietPi's
+  first boot. Nothing is written before Enter on the disk it shows. CI boots it in QEMU against a
+  blank disk on every change.
 
 ## [probe/v7.0.32-r21] - 2026-11-05
 

@@ -1,0 +1,229 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 g-guglielmi
+
+# The Argus probe installer (argus-core DESIGN 14a): a small live system on a USB stick that writes
+# DietPi's x86 image to a mini PC's internal disk and applies a probe's kit to it, so the first boot
+# is DietPi's automated one with the probe on top. This is its /init (PID 1).
+#
+# The stick: one FAT32 partition labelled ARGUS holding EFI/BOOT/BOOTX64.EFI (this system), DietPi's
+# DietPi_NativePC-UEFI-x86_64-*.img.xz (the user downloads it from dietpi.com) and argus/kits/<probe>/
+# (dietpi-lines.txt + Automation_Custom_Script.sh, from Add probe in Argus).
+#
+# Nothing is written without a keypress: the disk is shown first and Enter confirms.
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+VERSION="$(cat /etc/argus-installer.version 2>/dev/null || echo dev)"
+STICK=/mnt/stick
+TARGET=/mnt/setup
+MIN_BYTES=$((8 * 1000 * 1000 * 1000))
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /run /tmp "$STICK" "$TARGET"
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /run
+echo 0 > /proc/sys/kernel/printk 2>/dev/null
+
+# The screen and keyboard are tty1; every line also goes to the first serial port when there is one
+# (the CI test reads it there).
+exec </dev/tty1 >/dev/tty1 2>&1
+SERIAL=""
+[ -c /dev/ttyS0 ] && stty -F /dev/ttyS0 115200 2>/dev/null && SERIAL=/dev/ttyS0
+say() {
+  printf '%s\n' "$*"
+  [ -n "$SERIAL" ] && printf 'argus-installer: %s\r\n' "$*" > "$SERIAL" 2>/dev/null
+  return 0
+}
+ask() { # ask PROMPT: one answer line from the keyboard into $REPLY
+  printf '%s ' "$1"
+  [ -n "$SERIAL" ] && printf 'argus-installer: ASK %s\r\n' "$1" > "$SERIAL" 2>/dev/null
+  read -r REPLY || REPLY=""
+}
+
+# stop WHY: nothing more can be done; say why and wait (Enter powers off, s opens a shell).
+stop() {
+  say ""
+  say "Stopped: $*"
+  say ""
+  while :; do
+    ask "Press Enter to power off (or type s for a shell):"
+    case "$REPLY" in
+      s|S) sh ;;
+      *) sync; umount "$STICK" 2>/dev/null; poweroff -f ;;
+    esac
+  done
+}
+
+clear 2>/dev/null
+say "Argus probe installer $VERSION"
+say "Writes DietPi to this mini PC's disk, set up as an Argus probe."
+say ""
+
+# Drivers: everything the hardware asks for, twice (USB disks show up a moment after their bus).
+load_modules() {
+  find /sys/devices -name modalias -exec cat {} + 2>/dev/null | sort -u | xargs modprobe -abq 2>/dev/null
+  for m in vfat nls_cp437 nls_iso8859_1 nls_utf8 usb_storage uas sd_mod nvme ahci mmc_block sdhci_pci; do
+    modprobe -q "$m" 2>/dev/null
+  done
+}
+say "Finding the disks..."
+load_modules; sleep 3; load_modules
+
+# The stick: the partition labelled ARGUS (waits a little: USB storage can take a few seconds).
+dev=""
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  dev="$(blkid -L ARGUS 2>/dev/null)"
+  [ -n "$dev" ] && break
+  sleep 1; load_modules
+done
+[ -n "$dev" ] || stop "the stick's ARGUS partition was not found."
+mount -t vfat -o rw,utf8 "$dev" "$STICK" || stop "could not open the stick ($dev)."
+STICK_PART="${dev#/dev/}"
+STICK_DISK="$(basename "$(readlink -f "/sys/class/block/$STICK_PART/..")")"
+
+# DietPi's image: the newest DietPi_*.img.xz at the stick's root. A mini PC boots this stick by UEFI,
+# so it takes DietPi's UEFI image, never its BIOS one.
+IMAGE=""
+for f in "$STICK"/DietPi_*.img.xz "$STICK"/dietpi_*.img.xz; do
+  [ -f "$f" ] && IMAGE="$f"
+done
+if [ -z "$IMAGE" ]; then
+  stop "DietPi's image is not on the stick. Download DietPi_NativePC-UEFI-x86_64-Trixie.img.xz from dietpi.com and save it at the stick's top level, as it is."
+fi
+case "$(basename "$IMAGE")" in
+  *BIOS*) stop "$(basename "$IMAGE") is DietPi's BIOS image; a mini PC that boots this stick takes DietPi_NativePC-UEFI-x86_64-Trixie.img.xz." ;;
+  *x86_64*|*X86_64*) ;;
+  *) stop "$(basename "$IMAGE") is not DietPi's x86 image; a mini PC takes DietPi_NativePC-UEFI-x86_64-Trixie.img.xz." ;;
+esac
+SIZE="$(xz --robot --list "$IMAGE" 2>/dev/null | awk '$1 == "totals" { print $5 }')"
+case "$SIZE" in ''|*[!0-9]*) stop "$(basename "$IMAGE") can't be read (a broken download? Download it again)." ;; esac
+
+# The kit: argus/kits/<probe>/ (one: taken; several: asked).
+KITS=""
+n=0
+for d in "$STICK"/argus/kits/*/; do
+  [ -f "$d/dietpi-lines.txt" ] && [ -f "$d/Automation_Custom_Script.sh" ] || continue
+  n=$((n + 1)); KITS="$KITS$(basename "$d")
+"
+done
+[ "$n" -gt 0 ] || stop "there is no probe kit on the stick. In Argus: Add probe, DietPi, Mini PC, then copy the kit zip's argus folder onto the stick."
+if [ "$n" -eq 1 ]; then
+  KIT="$(printf '%s' "$KITS" | head -n1)"
+else
+  say "Probe kits on this stick:"
+  i=0
+  printf '%s' "$KITS" | while IFS= read -r k; do i=$((i + 1)); say "  $i) $k"; done
+  while :; do
+    ask "Which probe is this mini PC? (1-$n)"
+    case "$REPLY" in *[!0-9]*|'') continue ;; esac
+    [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "$n" ] && break
+  done
+  KIT="$(printf '%s' "$KITS" | sed -n "${REPLY}p")"
+fi
+KITDIR="$STICK/argus/kits/$KIT"
+
+# The disks it may write: internal (not USB, not the stick), not removable, at least 8 GB.
+gb() { awk -v b="$1" 'BEGIN { printf "%.0f GB", b / 1e9 }'; }
+DISKS=""
+m=0
+for s in /sys/block/*; do
+  d="$(basename "$s")"
+  case "$d" in loop*|ram*|zram*|sr*|fd*|dm-*|md*|mmcblk*boot*|mmcblk*rpmb|nbd*) continue ;; esac
+  [ "$d" = "$STICK_DISK" ] && continue
+  [ "$(cat "$s/removable" 2>/dev/null)" = "1" ] && continue
+  readlink -f "$s" | grep -q '/usb' && continue
+  bytes=$(( $(cat "$s/size" 2>/dev/null || echo 0) * 512 ))
+  [ "$bytes" -ge "$MIN_BYTES" ] || continue
+  m=$((m + 1)); DISKS="$DISKS$d
+"
+done
+describe() { # describe DISK: size, model, what is on it now
+  s="/sys/block/$1"
+  bytes=$(( $(cat "$s/size") * 512 ))
+  model="$(cat "$s/device/model" 2>/dev/null | sed 's/  */ /g; s/^ //; s/ $//')"
+  parts=""
+  for p in "$s/$1"*; do
+    [ -e "$p/partition" ] || continue
+    l="$(blkid -s LABEL -o value "/dev/$(basename "$p")" 2>/dev/null)"
+    [ -n "$l" ] || l="$(blkid -s TYPE -o value "/dev/$(basename "$p")" 2>/dev/null)"
+    parts="$parts${parts:+, }${l:-unknown}"
+  done
+  printf '%s  %s  %s  %s' "$1" "$(gb "$bytes")" "${model:-disk}" "${parts:+(now holds: $parts)}"
+}
+[ "$m" -gt 0 ] || stop "no internal disk of 8 GB or more was found (USB disks and the stick itself are left alone)."
+if [ "$m" -eq 1 ]; then
+  DISK="$(printf '%s' "$DISKS" | head -n1)"
+else
+  say "Disks in this mini PC:"
+  i=0
+  printf '%s' "$DISKS" | while IFS= read -r d; do i=$((i + 1)); say "  $i) $(describe "$d")"; done
+  while :; do
+    ask "Which disk gets DietPi? (1-$m)"
+    case "$REPLY" in *[!0-9]*|'') continue ;; esac
+    [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "$m" ] && break
+  done
+  DISK="$(printf '%s' "$DISKS" | sed -n "${REPLY}p")"
+fi
+[ "$SIZE" -le $(( $(cat "/sys/block/$DISK/size") * 512 )) ] || stop "$DISK is smaller than DietPi's image."
+
+say ""
+say "Probe:  $KIT"
+say "DietPi: $(basename "$IMAGE")"
+say "Disk:   $(describe "$DISK")"
+say ""
+say "EVERYTHING on $DISK will be erased."
+ask "Press Enter to install, or type q and Enter to stop:"
+case "$REPLY" in '') ;; *) stop "nothing was written." ;; esac
+
+# Write, hashing what goes in on the way, then read it back and compare.
+say ""
+say "Writing DietPi to $DISK..."
+for p in /sys/block/"$DISK"/"$DISK"*; do [ -e "$p/partition" ] && umount "/dev/$(basename "$p")" 2>/dev/null; done
+rm -f /run/in.fifo; mkfifo /run/in.fifo
+sha256sum < /run/in.fifo > /run/in.sha &
+hp=$!
+if ! xz -dc "$IMAGE" | tee /run/in.fifo | pv -f -s "$SIZE" | dd of="/dev/$DISK" bs=4M conv=fsync 2>/run/dd.err; then
+  wait "$hp"
+  stop "writing to $DISK failed: $(tail -n1 /run/dd.err)"
+fi
+wait "$hp"
+sync
+say "Checking the copy..."
+want="$(cut -d' ' -f1 /run/in.sha)"
+echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+got="$(head -c "$SIZE" "/dev/$DISK" | sha256sum | cut -d' ' -f1)"
+[ -n "$want" ] && [ "$want" = "$got" ] || stop "the copy on $DISK doesn't match the image (a failing disk or a broken download?)."
+
+# The kit: its lines into the dietpi.txt on DIETPISETUP, its script beside it.
+blockdev --rereadpt "/dev/$DISK" 2>/dev/null; sleep 2
+part=""
+for p in /sys/block/"$DISK"/"$DISK"*; do
+  [ -e "$p/partition" ] || continue
+  [ "$(blkid -s LABEL -o value "/dev/$(basename "$p")" 2>/dev/null)" = "DIETPISETUP" ] && part="/dev/$(basename "$p")"
+done
+[ -n "$part" ] || stop "DietPi's setup partition (DIETPISETUP) is not on $DISK: is $(basename "$IMAGE") DietPi's mini PC image?"
+mount -t vfat "$part" "$TARGET" || stop "could not open $part."
+[ -f "$TARGET/dietpi.txt" ] || stop "there is no dietpi.txt on $part."
+awk -v kit="$KITDIR/dietpi-lines.txt" -f /usr/share/argus/apply-kit-lines.awk "$TARGET/dietpi.txt" "$TARGET/dietpi.txt" > /run/dietpi.txt \
+  || stop "could not set the probe's lines in dietpi.txt."
+cat /run/dietpi.txt > "$TARGET/dietpi.txt" && cp "$KITDIR/Automation_Custom_Script.sh" "$TARGET/Automation_Custom_Script.sh" \
+  || stop "could not write the kit to $part."
+sync; umount "$TARGET"
+
+# The kit's token is single use: the kit is marked used on the stick.
+used="$STICK/argus/kits/used-$KIT"
+[ -e "$used" ] && used="$used-$(date +%s)"
+mv "$KITDIR" "$used" 2>/dev/null || say "(could not mark the kit used on the stick: delete argus/kits/$KIT before the next mini PC)"
+sync; umount "$STICK" 2>/dev/null
+
+say ""
+say "Done: DietPi is on $DISK, set up as $KIT."
+say "Pull the stick out: the mini PC then restarts into DietPi's first boot (10 to 15 minutes),"
+say "and the probe enrolls with Argus."
+while [ -e "/sys/block/$STICK_DISK" ]; do sleep 1; done
+say "Restarting."
+sleep 1
+reboot -f

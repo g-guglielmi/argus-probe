@@ -1,0 +1,127 @@
+name: installer
+
+# The Argus probe installer stick (argus-core DESIGN 14a): a small UEFI live system that writes
+# DietPi's x86 image to a mini PC's disk and applies a probe's kit to it. Built and tested on every
+# main push that touches deploy/installer/ (or this file) and on demand; an `installer/v*` tag also
+# publishes a GitHub Release with the stick image, its notes taken from the CHANGELOG.md section
+# headed with the tag. The installer is not the probe image: nothing here is a fleet release.
+
+on:
+  push:
+    branches: [main]
+    tags: ['installer/v*']
+  workflow_dispatch:
+# No `paths:` filter: combining `paths` with `tags` under one push block suppresses tag events. The
+# build job checks the changed paths itself instead.
+
+permissions: {}
+
+defaults:
+  run:
+    working-directory: deploy/installer
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Does this push touch the installer?
+        id: scope
+        working-directory: .
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != push ] || [ "$GITHUB_REF_TYPE" = tag ] || [ -z "$BEFORE" ] \
+             || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -qE '^(deploy/installer/|\.github/workflows/installer\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "nothing for the installer in this push"
+          fi
+
+      - name: Release notes (tag builds only)
+        if: steps.scope.outputs.run == 'true' && github.ref_type == 'tag'
+        run: |
+          awk -v tag="$GITHUB_REF_NAME" '
+            index($0, "## [" tag "]") == 1 { flag=1; print; next }
+            flag && /^## \[/ { flag=0 }
+            flag { print }
+          ' ../../CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "No CHANGELOG section found for ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          cat >> RELEASE_NOTES.md <<'EOF'
+
+          **Download:** `argus-probe-installer.img.xz`. Write it to a USB stick (4 GB or more) with
+          Rufus or balenaEtcher, as it is. Then add DietPi's
+          `DietPi_NativePC-UEFI-x86_64-Trixie.img.xz` (from dietpi.com, not bundled) and a probe kit
+          from Argus (Add probe, DietPi, Mini PC). See deploy/installer/README.md.
+          EOF
+          cat RELEASE_NOTES.md
+
+      - name: Tools
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y systemd-ukify systemd-boot-efi python3-pefile mtools dosfstools \
+            fdisk xz-utils cpio qemu-system-x86 ovmf busybox
+          sudo chmod 0666 /dev/kvm 2>/dev/null || true
+
+      - name: The kit rule (apply-kit-lines.awk)
+        if: steps.scope.outputs.run == 'true'
+        run: python3 test/test_apply_kit.py
+
+      - name: The scripts parse
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          dash -n init
+          busybox sh -n init
+          bash -n build.sh
+
+      - name: Build
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          v=dev
+          [ "$GITHUB_REF_TYPE" = tag ] && v="${GITHUB_REF_NAME#installer/}"
+          bash build.sh "$v"
+
+      - name: Boot it in QEMU and install onto a blank disk
+        if: steps.scope.outputs.run == 'true'
+        run: python3 test/qemu_test.py output/argus-probe-installer.img
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.scope.outputs.run == 'true'
+        with:
+          name: argus-probe-installer
+          path: |
+            deploy/installer/output/argus-probe-installer.img.xz
+            deploy/installer/RELEASE_NOTES.md
+          if-no-files-found: ignore
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: argus-probe-installer
+          path: dist
+      - name: Publish Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          # The repo's Latest release stays the probe image's; the installer is published beside it.
+          make_latest: false
+          files: dist/output/argus-probe-installer.img.xz
+          body_path: dist/RELEASE_NOTES.md
