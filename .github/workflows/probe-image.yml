@@ -80,6 +80,11 @@ jobs:
       - name: Test the result posts
         run: python3 deploy/probe-image/tests/test_corepost.py
 
+      # The action runner (argus_action.py, mirrored in argus-core): base64 arguments, the exit code
+      # and state read back, the reasons a host refuses. The SSH session is faked.
+      - name: Test the action runner
+        run: python3 deploy/probe-image/tests/test_action.py
+
       # The VM's host tools ride the image: the installer writes what the manifest says, the manifest
       # matches the folder, the scripts parse.
       - name: Test the host tools

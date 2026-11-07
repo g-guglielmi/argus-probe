@@ -19,9 +19,10 @@ USER root
 # holds the socket - so this image needs no docker-cli.
 # python3: runs the Argus external-check collectors (argus_nut.py for NUT/upsd, dns-resolver.py for
 # DNS resolution, argus_xcpng.py for XCP-NG's XAPI, argus_linux_ssh.py for agentless Linux over SSH)
-# that let agentless device classes reach protocols Zabbix can't poll natively, plus the two
-# discovery runners the check-in loop backgrounds when Argus queues a job: argus_netscan.py (the
-# subnet scanner) and argus_unifi_sweep.py (the UniFi controller sweep). All stdlib-only
+# that let agentless device classes reach protocols Zabbix can't poll natively, the two discovery
+# runners the check-in loop backgrounds when Argus queues a job: argus_netscan.py (the subnet
+# scanner) and argus_unifi_sweep.py (the UniFi controller sweep), and argus_action.py, which Zabbix
+# runs for an Argus action (a restart over SSH, a NetScaler save, a webhook). All stdlib-only
 # (they build/parse the wire protocols themselves), so no extra Python packages and no nmap.
 # openssh-client + sshpass: the agentless-Linux collector logs into the target over SSH (key auth via
 # openssh-client; password auth via sshpass, which feeds $SSHPASS so ssh's own argv carries no password;

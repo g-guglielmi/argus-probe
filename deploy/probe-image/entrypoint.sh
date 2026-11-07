@@ -218,6 +218,12 @@ export ZBX_SERVER_HOST="$CORE_HOST"
 export ZBX_PROXYMODE=0
 export ZBX_PROXYOFFLINEBUFFER="${ZBX_PROXYOFFLINEBUFFER:-168}"
 export ZBX_PROXYLOCALBUFFER="${ZBX_PROXYLOCALBUFFER:-0}"
+# Argus actions (DESIGN 7r in argus-core): an action is a Zabbix script Argus owns, run on the proxy
+# that monitors the host (argus_action.py, or a command through the host's agent). Zabbix refuses
+# them until remote commands are on; each one is logged in the proxy's log. ZBX_ENABLEREMOTECOMMANDS=0
+# on the container turns actions off for this probe.
+export ZBX_ENABLEREMOTECOMMANDS="${ZBX_ENABLEREMOTECOMMANDS:-1}"
+export ZBX_LOGREMOTECOMMANDS="${ZBX_LOGREMOTECOMMANDS:-1}"
 # Process counts: the container's own ZBX_START* wins; else the count Argus handed out (procs.env);
 # else the image default. PROCS_JSON is what this start runs with, reported at every check-in so
 # Argus knows when a change it made has been applied.

@@ -20,6 +20,20 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r24] - 2026-11-10
+
+### Added
+- **Argus actions run on the probe** (argus-core DESIGN 7r): a fix someone runs from a sensor in
+  trouble (restart a service or a container over SSH, run a command, save a NetScaler's config,
+  call a webhook). Each action is a Zabbix script Argus owns; Zabbix runs it on the probe that
+  monitors the host, with the host's own monitoring login, so a probe and the core behave the same.
+  The image ships `argus_action.py` (stdlib only, mirrored in argus-core), which takes every value
+  base64-encoded, so nothing a person typed is read by a shell, and answers one JSON object: worked or
+  failed, why in words, and what the host must allow (a sudoers line).
+- **Remote commands are on** (`ZBX_ENABLEREMOTECOMMANDS=1`, each one logged with
+  `ZBX_LOGREMOTECOMMANDS=1`): Zabbix refuses the scripts without it. `ZBX_ENABLEREMOTECOMMANDS=0` on
+  the container turns actions off for that probe.
+
 ## [probe/v7.0.32-r23] - 2026-11-06
 
 ### Changed
