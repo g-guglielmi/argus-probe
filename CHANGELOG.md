@@ -20,6 +20,15 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r26] - 2026-11-10
+
+### Fixed
+- **Ookla refusing the address is no longer retried.** r25's reason showed what "code 173" was:
+  Ookla's servers answering "Too many requests received" for the probe's internet address, which
+  counts every Ookla tester behind it (a Speedtest Tracker on the same line, for one). r25 tried again
+  up to three times, adding to the count. That refusal now ends the run at once and reads "Ookla
+  refused the test: too many tests from this address"; other failures are still tried again.
+
 ## [probe/v7.0.32-r25] - 2026-11-10
 
 ### Fixed

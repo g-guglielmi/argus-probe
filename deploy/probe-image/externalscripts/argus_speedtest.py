@@ -472,7 +472,19 @@ def ookla_parse(stdout, stderr, code):
 
 
 class OoklaTryFailed(OoklaError):
-    """One try of the test failed (worth another); an OoklaError on its own is not (no CLI)."""
+    """One try of the test failed (worth another); an OoklaError on its own is not (no CLI, or Ookla
+    refusing more tests from this address)."""
+
+
+# Ookla's servers refuse an address that tests too often (its free CLI is licensed for personal use on
+# one computer): "Too many requests received. You may run the Speedtest CLI on a single computer for
+# personal, non-commercial use only. ...". Trying again only adds to the count.
+OOKLA_REFUSED = "Ookla refused the test: too many tests from this address (its free CLI is for personal use on one computer; another Ookla tester on the same internet address, such as Speedtest Tracker, counts too)"
+
+
+def ookla_refused(text):
+    low = text.lower()
+    return "too many requests" in low or "speedtest-embedded" in low
 
 
 def ookla_try(exe, server, timeout):
@@ -490,6 +502,8 @@ def ookla_try(exe, server, timeout):
     try:
         return ookla_parse(p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace"), p.returncode)
     except OoklaError as e:
+        if ookla_refused(str(e)):
+            raise OoklaError(OOKLA_REFUSED)
         raise OoklaTryFailed(str(e))
 
 
