@@ -20,6 +20,16 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+## [probe/v7.0.32-r25] - 2026-11-10
+
+### Fixed
+- **Ookla speed tests try again instead of failing.** About half the runs on one site ended with
+  "it ended (code 173) with no result". A try that fails is now run again after 15 seconds, and when
+  a chosen server (`{$SPEEDTEST.SERVER}`) fails twice, once more on the server Ookla picks; the run's
+  test site then says "server N failed twice". All tries fit in 165 seconds (argus-core gives the
+  item 180). A failure now carries the CLI's own last line beside its exit code, so the reason says
+  more than a number.
+
 ## [probe/v7.0.32-r24] - 2026-11-10
 
 ### Added

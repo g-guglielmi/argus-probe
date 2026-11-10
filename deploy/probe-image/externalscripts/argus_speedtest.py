@@ -90,7 +90,9 @@ OOKLA_SHA256 = {
 OOKLA_ARCH = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64",
               "armv7l": "armhf", "armv6l": "armhf", "i686": "i386", "i386": "i386"}
 OOKLA_DIR = "/var/lib/zabbix/ookla"  # the probe's data volume: downloaded once, kept across updates
-OOKLA_TIMEOUT = 50  # seconds a run may take (the template gives the item 60)
+OOKLA_TIMEOUT = 50  # seconds one try may take
+OOKLA_BUDGET = 165  # seconds all tries together may take (the template gives the item 180)
+OOKLA_RETRY_WAIT = 15  # seconds between a failed try and the next
 # The Server-Timing entries that are Cloudflare's own time on a request (its edge and the speed test
 # worker; older answers carry one cfRequestDuration), left out of a round trip.
 SERVER_TIMES = ("cfSpeedEdge", "cfSpeedWorker", "cfRequestDuration")
@@ -443,14 +445,17 @@ def ookla_binary(directory=OOKLA_DIR):
 
 
 def ookla_parse(stdout, stderr, code):
-    """Ookla's result object from its JSON lines, or why there is none."""
-    result, errors = None, []
+    """Ookla's result object from its JSON lines, or why there is none: its error lines, else the
+    last plain line it printed, else its exit code."""
+    result, errors, plain = None, [], ""
     for line in (stdout + "\n" + stderr).splitlines():
         line = line.strip()
         if line.startswith("[error]"):
             errors.append(line[len("[error]"):].strip())
             continue
         if not line.startswith("{"):
+            if line:
+                plain = " ".join(line.split())[:200]
             continue
         try:
             d = json.loads(line)
@@ -461,24 +466,60 @@ def ookla_parse(stdout, stderr, code):
         elif d.get("type") == "log" and d.get("level") == "error" and d.get("message"):
             errors.append(str(d["message"]).strip())
     if result is None:
-        raise OoklaError("Ookla's test failed: %s" % (errors[0] if errors else "it ended (code %d) with no result" % code))
+        why = errors[0] if errors else "it ended (code %d) with no result%s" % (code, ": " + plain if plain else "")
+        raise OoklaError("Ookla's test failed: %s" % why)
     return result
 
 
-def ookla_run(server):
-    exe = ookla_binary()
+class OoklaTryFailed(OoklaError):
+    """One try of the test failed (worth another); an OoklaError on its own is not (no CLI)."""
+
+
+def ookla_try(exe, server, timeout):
     cmd = [exe, "--accept-license", "--accept-gdpr", "--format=json", "--progress=no"]
     if server:
         cmd.append("--server-id=%s" % server)
     # Its settings (the terms accepted) live beside it, not in a home the proxy's user may not have.
     env = {"HOME": os.path.dirname(exe), "PATH": "/usr/bin:/bin"}
     try:
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=OOKLA_TIMEOUT, env=env)
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
-        raise OoklaError("Ookla's test didn't finish in %d seconds" % OOKLA_TIMEOUT)
+        raise OoklaTryFailed("Ookla's test didn't finish in %d seconds" % timeout)
     except OSError as e:
         raise OoklaError("could not run Ookla's CLI: %s" % (e.strerror or str(e)).lower())
-    return ookla_parse(p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace"), p.returncode)
+    try:
+        return ookla_parse(p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace"), p.returncode)
+    except OoklaError as e:
+        raise OoklaTryFailed(str(e))
+
+
+def ookla_run(server, clock=time.monotonic, sleep=time.sleep):
+    """The test, tried again when a try fails: once more after a short wait, and when a chosen server
+    failed both times, once on the server Ookla picks. All within OOKLA_BUDGET. The result says how
+    many tries it took ("tries"); a failure says why the last one failed."""
+    exe = ookla_binary()
+    plan = [server, server] + ([""] if server else [])
+    start, last, tried = clock(), None, 0
+    for srv in plan:
+        left = OOKLA_BUDGET - (clock() - start)
+        if tried:
+            if left < OOKLA_RETRY_WAIT + 20:
+                break  # no time left for a useful try
+            sleep(OOKLA_RETRY_WAIT)
+            left -= OOKLA_RETRY_WAIT
+        tried += 1
+        try:
+            r = ookla_try(exe, srv, max(10, min(OOKLA_TIMEOUT, int(left))))
+            r["tries"] = tried
+            if server and not srv:
+                r["fallback_from"] = server
+            return r
+        except OoklaTryFailed as e:
+            last = e
+    msg = str(last)
+    if tried > 1:
+        msg += " (tried %d times%s)" % (tried, ", the last on the server Ookla picked" if tried == 3 else "")
+    raise OoklaError(msg)
 
 
 def ookla_fill(out, r):
@@ -503,6 +544,9 @@ def ookla_fill(out, r):
     out["isp"] = str(r.get("isp") or "")
     site = ", ".join(str(x) for x in (srv.get("name"), srv.get("location")) if x)
     out["colo"] = site + (" (server %s)" % srv["id"] if srv.get("id") else "")
+    if r.get("fallback_from"):
+        out["colo"] += "; server %s failed twice" % r["fallback_from"]
+    out["tries"] = r.get("tries", 1)
     missing = [w for w, v in (("download", down), ("upload", up)) if v is None]
     if missing:
         out["error"] = "Ookla's test reported no %s speed" % " or ".join(missing)
