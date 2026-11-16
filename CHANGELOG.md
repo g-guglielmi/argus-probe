@@ -20,6 +20,9 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+- **Docs (probe VM README): what the OS patching installs by itself.** Security updates, and
+  Debian's point releases when they come out; it said "security suite only". Nothing changes on a VM.
+
 ## [probe/v7.0.32-r26] - 2026-11-10
 
 ### Fixed
