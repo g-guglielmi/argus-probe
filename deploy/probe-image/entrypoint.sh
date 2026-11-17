@@ -218,6 +218,40 @@ export ZBX_SERVER_HOST="$CORE_HOST"
 export ZBX_PROXYMODE=0
 export ZBX_PROXYOFFLINEBUFFER="${ZBX_PROXYOFFLINEBUFFER:-168}"
 export ZBX_PROXYLOCALBUFFER="${ZBX_PROXYLOCALBUFFER:-0}"
+# Where collected values wait for the core. Zabbix's own default ("disk") writes every value to the
+# proxy's SQLite file before it is sent: on a Raspberry Pi that is the SD card, written all day, and
+# the file is what a power cut damages (Zabbix opens it with synchronous=0, see dbcheck.py). "hybrid"
+# keeps the values in memory while the core answers and goes to the file only when it has to: the
+# core is away and the memory buffer fills or its oldest value is ZBX_PROXYMEMORYBUFFERAGE seconds
+# old (so a power cut during a core outage costs ten minutes of values at most), and on a clean
+# stop. Values already in the file are sent first, so the change loses nothing, and the 7 days of
+# ZBX_PROXYOFFLINEBUFFER hold as before. Zabbix refuses to start on hybrid or memory together with
+# ProxyLocalBuffer, on a memory size without them, and on an age outside hybrid: so a probe that
+# sets ZBX_PROXYLOCALBUFFER stays on disk, and each mode gets only what it may have.
+# ZBX_PROXYBUFFERMODE=disk on the container brings the old way back.
+BUFMODE="${ZBX_PROXYBUFFERMODE:-hybrid}"
+case "$BUFMODE" in
+  disk|memory|hybrid) ;;
+  *) echo "argus-probe: ZBX_PROXYBUFFERMODE='$BUFMODE' is not disk, memory or hybrid - using hybrid" >&2; BUFMODE=hybrid ;;
+esac
+if [ "$BUFMODE" != "disk" ] && [ "$ZBX_PROXYLOCALBUFFER" != "0" ]; then
+  echo "argus-probe: ZBX_PROXYLOCALBUFFER is set, which Zabbix allows only with the disk buffer - staying on the disk buffer" >&2
+  BUFMODE=disk
+fi
+export ZBX_PROXYBUFFERMODE="$BUFMODE"
+case "$BUFMODE" in
+  hybrid)
+    export ZBX_PROXYMEMORYBUFFERSIZE="${ZBX_PROXYMEMORYBUFFERSIZE:-16M}"
+    export ZBX_PROXYMEMORYBUFFERAGE="${ZBX_PROXYMEMORYBUFFERAGE:-600}"
+    ;;
+  memory)
+    export ZBX_PROXYMEMORYBUFFERSIZE="${ZBX_PROXYMEMORYBUFFERSIZE:-16M}"
+    unset ZBX_PROXYMEMORYBUFFERAGE
+    ;;
+  disk)
+    unset ZBX_PROXYMEMORYBUFFERSIZE ZBX_PROXYMEMORYBUFFERAGE
+    ;;
+esac
 # Argus actions (DESIGN 7r in argus-core): an action is a Zabbix script Argus owns, run on the proxy
 # that monitors the host (argus_action.py, or a command through the host's agent). Zabbix refuses
 # them until remote commands are on; each one is logged in the proxy's log. ZBX_ENABLEREMOTECOMMANDS=0
@@ -415,5 +449,13 @@ mkdir -p /var/lib/zabbix/ssl/ssl_ca /var/lib/zabbix/ssl/ssl_ca_internal \
 mkdir -p /var/lib/zabbix/ookla 2>/dev/null || true
 chown zabbix:zabbix /var/lib/zabbix/ookla 2>/dev/null || chown 1997:1997 /var/lib/zabbix/ookla 2>/dev/null || true
 
-echo "argus-probe: starting Zabbix proxy '$ZBX_HOSTNAME' -> $ZBX_SERVER_HOST:10051"
+# The proxy's local database after a power cut (dbcheck.py): a damaged file stops the proxy at every
+# start until someone removes it by hand, and holds nothing but the values not yet sent. So a
+# damaged one is set aside here and the proxy starts with a new one; a healthy one, or one the check
+# can't judge, is left alone. ARGUS_DB_CHECK=0 skips the check.
+if [ "${ARGUS_DB_CHECK:-1}" != "0" ]; then
+  python3 /usr/local/lib/argus/dbcheck.py "/var/lib/zabbix/db_data/${ZBX_HOSTNAME}.sqlite" || true
+fi
+
+echo "argus-probe: starting Zabbix proxy '$ZBX_HOSTNAME' -> $ZBX_SERVER_HOST:10051 ($ZBX_PROXYBUFFERMODE buffer)"
 exec /usr/bin/docker-entrypoint.sh "$@"

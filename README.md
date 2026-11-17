@@ -81,6 +81,26 @@ process runs and accepts connections on its listen port (the loopback and 10051 
 `ZBX_LISTENIP` / `ZBX_LISTENPORT` say otherwise). `docker ps`, the Unraid GUI and Dockhand show the
 result. Reaching the core is not part of it: Argus alerts on that ("Probe unreachable").
 
+## Values waiting for the core, and a power cut
+
+The proxy keeps what it has collected until the core takes it. It runs Zabbix's **hybrid** buffer:
+values wait in memory (16 MB, `ZBX_PROXYMEMORYBUFFERSIZE`) while the core answers, and go to the
+proxy's local SQLite file (`db_data/<proxy name>.sqlite` in the data folder) only when the core is
+away and the memory fills or its oldest value is ten minutes old (`ZBX_PROXYMEMORYBUFFERAGE`, in
+seconds), and on a clean stop. Up to 7 days are kept there during a core outage
+(`ZBX_PROXYOFFLINEBUFFER`, in hours). Zabbix's own default writes every value to the file first:
+on a Raspberry Pi that is the SD card, written all day. `-e ZBX_PROXYBUFFERMODE=disk` brings that
+back; a probe that sets `ZBX_PROXYLOCALBUFFER` stays on disk by itself, since Zabbix refuses the
+two together.
+
+A power cut loses the values still in memory: seconds of them while the core answers, up to ten
+minutes during a core outage. It can also damage the SQLite file, which Zabbix writes without
+forcing anything to the disk. A proxy with a damaged file would stop at every start, so before each
+start the probe checks the file (`dbcheck.py`): a damaged one is set aside as
+`<proxy name>.sqlite.damaged` (one copy kept) and the proxy starts with a new one, saying so in the
+container's log. Nothing but the values not yet sent is lost with it: the configuration comes from
+the core again. `-e ARGUS_DB_CHECK=0` skips the check.
+
 ## Zabbix process counts
 
 Zabbix reads its process counts (`StartPingers`, `StartPollers`, `StartTrappers`, ...) only when the

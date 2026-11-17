@@ -47,6 +47,10 @@ RUN chmod +x /usr/local/bin/argus-entrypoint.sh
 # The minute check-in's report, sourced by the entrypoint (and tested on its own in CI).
 COPY checkin.sh /usr/local/lib/argus/checkin.sh
 RUN chmod 0644 /usr/local/lib/argus/checkin.sh
+# The check of the proxy's local database the entrypoint runs before each start (a file a power cut
+# damaged is set aside instead of stopping the proxy for good).
+COPY dbcheck.py /usr/local/lib/argus/dbcheck.py
+RUN chmod 0755 /usr/local/lib/argus/dbcheck.py
 
 # Argus external-check collectors for agentless device classes (NUT UPS, DNS resolution, XCP-NG,
 # Linux over SSH) plus the discovery runners (subnet scanner, UniFi sweep). Zabbix runs the

@@ -23,6 +23,37 @@ listed together newest first, each section headed by its exact release tag:
 - **Docs (probe VM README): what the OS patching installs by itself.** Security updates, and
   Debian's point releases when they come out; it said "security suite only". Nothing changes on a VM.
 
+## [probe/v7.0.32-r27] - 2026-11-17
+
+A power cut on a probe, above all a Raspberry Pi on its SD card. Both changes reach a probe with its
+next update; nothing to do on the box.
+
+### Changed
+- **Collected values wait in memory, not on the disk.** Until now the proxy wrote every value to its
+  local SQLite file before sending it (Zabbix's "disk" buffer): on a Pi that is the SD card, written
+  all day, and it is the file a power cut damages. The proxy now runs Zabbix's **hybrid** buffer:
+  values stay in memory (16 MB) while the core answers, and go to the file only when the core is
+  away and the memory fills or its oldest value is ten minutes old, and on a clean stop. Values
+  already in the file are sent first, so the change loses nothing; the 7 days kept during a core
+  outage hold as before. What it costs: a power cut while the core is unreachable loses up to ten
+  minutes of values where it lost none. `ZBX_PROXYBUFFERMODE=disk` on the container brings the old
+  way back; `ZBX_PROXYMEMORYBUFFERSIZE` and `ZBX_PROXYMEMORYBUFFERAGE` change the two numbers. A
+  probe that sets `ZBX_PROXYLOCALBUFFER` stays on disk, since Zabbix refuses the two together.
+
+### Added
+- **A local database a power cut damaged no longer stops the probe.** Zabbix opens that file
+  without forcing its writes to the disk, so a cut in the middle of one can leave it damaged, and a
+  proxy with a damaged file stops at every start until someone removes the file by hand on the
+  probe's host. The file holds nothing but the values not yet sent (the configuration comes from the
+  core again). Before each start the probe now checks it: a damaged one (SQLite says so, it is no
+  database, or it is empty) is set aside as `<name>.sqlite.damaged`, one copy kept, and the proxy
+  starts with a new one, with a line in the container's log. A healthy file, or one the check can't
+  judge (the disk gives errors, the check takes over two minutes), is left alone.
+  `ARGUS_DB_CHECK=0` skips the check.
+- **Pull requests start the image.** A pull request now runs the tests, builds the image without
+  publishing it and starts it as an enrolled probe (`test/probe_live_test.sh`): the proxy must come
+  up on the settings above, and come back after its database file was overwritten.
+
 ## [probe/v7.0.32-r26] - 2026-11-10
 
 ### Fixed

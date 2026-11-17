@@ -35,6 +35,15 @@ on:
       - '!deploy/probe-image/.zabbix-base'        # the bot rewrites this every run; never a "wrapper change"
       - '!deploy/probe-image/docker-compose.yml'  # a deploy artifact, not part of the built image
       - 'deploy/probe-vm/host/**'                 # the VM's host tools ride the image (DESIGN 14c)
+  # A pull request runs the tests, builds the image without pushing it and starts it once (the check
+  # job below). It never publishes: the build job runs on main alone.
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/probe-image/**'
+      - 'deploy/probe-vm/host/**'
+      - 'test/**'
+      - '.github/workflows/probe-image.yml'
   schedule:
     - cron: '17 6 * * *'   # daily ~06:17 UTC; an LTS patch line rarely moves faster
   workflow_dispatch:        # "Run workflow" button forces an immediate check/rebuild
@@ -44,15 +53,57 @@ permissions:
   packages: write   # push the image to GHCR
   id-token: write   # keyless cosign: the signature names this workflow as the signer
 
+# Publishing runs queue behind each other and are never cancelled; a pull request's check is its
+# own group (it must never take a publishing run's place in the queue), and a newer push to the same
+# pull request cancels the older check.
 concurrency:
-  group: probe-image
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('probe-image-pr-{0}', github.event.pull_request.number) || 'probe-image' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   BASE_IMAGE: zabbix/zabbix-proxy-sqlite3:alpine-7.0-latest
   LOCK_FILE: deploy/probe-image/.zabbix-base
 
 jobs:
+  # The pull request's check: every test the build job runs, then the image built as the build job
+  # builds it (amd64 alone, loaded into the runner's Docker, never pushed) and started for real:
+  # the proxy must come up on the settings the entrypoint hands it, and come back after its local
+  # database was damaged (test/probe_live_test.sh). Read-only token, no secrets.
+  check:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run the tests
+        run: |
+          set -eu
+          dash -n deploy/probe-image/entrypoint.sh
+          dash -n deploy/probe-image/checkin.sh
+          dash deploy/probe-image/tests/test_checkin.sh
+          for t in deploy/probe-image/tests/test_*.py deploy/probe-vm/host/tests/test_host_tools.py; do
+            echo "== $t"; python3 "$t"
+          done
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build without pushing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./deploy/probe-image
+          file: ./deploy/probe-image/Dockerfile
+          build-contexts: |
+            hosttools=./deploy/probe-vm/host
+          pull: true
+          push: false
+          load: true
+          tags: argus-probe:pr
+          build-args: |
+            PROBE_VERSION=pr-${{ github.event.pull_request.number }}
+            APK_REFRESH=${{ github.run_id }}
+          cache-from: type=gha
+      - name: Start the image for real
+        run: bash test/probe_live_test.sh argus-probe:pr
+
   build:
     # :latest and a Release only ever come from main: a "Run workflow" on another ref must not move
     # the fleet's tag.
@@ -84,6 +135,10 @@ jobs:
       # and state read back, the reasons a host refuses. The SSH session is faked.
       - name: Test the action runner
         run: python3 deploy/probe-image/tests/test_action.py
+
+      # A local database a power cut damaged is set aside; a healthy one is never touched.
+      - name: Test the database check
+        run: python3 deploy/probe-image/tests/test_dbcheck.py
 
       # The VM's host tools ride the image: the installer writes what the manifest says, the manifest
       # matches the folder, the scripts parse.
