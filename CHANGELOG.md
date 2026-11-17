@@ -23,6 +23,24 @@ listed together newest first, each section headed by its exact release tag:
 - **Docs (probe VM README): what the OS patching installs by itself.** Security updates, and
   Debian's point releases when they come out; it said "security suite only". Nothing changes on a VM.
 
+## [probe/v7.0.32-r28] - 2026-11-17
+
+### Fixed
+- **A power cut can no longer leave a probe's identity half written.** The key, the certificate,
+  the CA and `proxy.env` were written in place: a file not yet on the disk when the power goes
+  comes back empty, and a probe with an empty `proxy.env` or certificate could only be enrolled
+  again by hand, its token being spent. Each of them is now written aside, forced to the disk and
+  renamed into place, at enrollment and whenever `proxy.env` changes later (a new core host, a new
+  check-in token), so a cut leaves the old file or the new one.
+- **An incomplete enrollment is not made worse.** A probe that finds some of its four files missing
+  or empty says so and enrolls again, and until that has gone through it leaves the files that are
+  there alone. Before, the retry overwrote the key first and deleted it when the core refused the
+  spent token. When the core refuses, the log now says what to do: enroll the probe again with a
+  new token from the Argus Probes page.
+- **The pull request check enrolls a probe.** `test/probe_live_test.sh` now also enrolls the image
+  against a stand-in for the core (`test/fake_core.py`): a new probe, one whose `proxy.env` came
+  back empty with its token spent, and the same one with a new token.
+
 ## [probe/v7.0.32-r27] - 2026-11-17
 
 A power cut on a probe, above all a Raspberry Pi on its SD card. Both changes reach a probe with its

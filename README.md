@@ -24,6 +24,13 @@ token from the Argus **Add probe** wizard, pick the console keyboard layout, and
 own certificate and registers itself - the private key never leaves the probe. Zero-touch enrollment
 via cloud-init (a seed ISO) is also supported, in which case this page is skipped.
 
+What enrollment leaves in the data folder (`enroll/`: the key, the certificate, the CA and
+`proxy.env`) is the probe's identity, and the token is spent. Each file is written aside, forced to
+the disk and renamed into place, so a power cut leaves it whole. A probe that still finds one of
+them missing or empty says so and tries to enroll again, leaving the files that are there alone
+until that has gone through: with a spent token the core refuses, and the probe has to be enrolled
+again with a new token from the Argus Probes page.
+
 <p align="center"><img src="docs/screenshots/first-boot.png" alt="Probe first-boot setup page" width="440"></p>
 
 <p align="center"><sub>Screenshot uses generic placeholder data.</sub></p>

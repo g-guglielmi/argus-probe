@@ -73,19 +73,46 @@ done
 
 # drop VAR LABEL - clear a value that failed its check, saying so.
 drop() { echo "argus-probe: ignoring an unexpected $2 value from Argus" >&2; eval "$1=''"; }
+# What enrollment leaves (the key, the certificate, the CA, proxy.env) is this probe's identity, and
+# the token that bought it is spent. A file written in place and not yet on the disk when the power
+# goes comes back empty: an empty proxy.env or certificate meant a probe that could only be enrolled
+# again by hand. So every one of them is written aside, forced to the disk, and renamed into place:
+# a power cut leaves the old file or the new one, never half of one.
+to_disk() { sync 2>/dev/null || true; }
 write_meta() {
   printf 'PROXY_NAME=%s\nCORE_HOST=%s\nPROBE_TOKEN=%s\nCHECKIN_URL=%s\n' \
-    "${PROXY_NAME:-}" "${CORE_HOST:-}" "${PROBE_TOKEN:-}" "${CHECKIN_URL:-}" > "$META"
-  chmod 600 "$META" 2>/dev/null || true
+    "${PROXY_NAME:-}" "${CORE_HOST:-}" "${PROBE_TOKEN:-}" "${CHECKIN_URL:-}" > "$META.new"
+  chmod 600 "$META.new" 2>/dev/null || true
+  to_disk
+  mv -f "$META.new" "$META"
+  to_disk
 }
+# enrolled - all four files are there and none is empty (an empty one is what a power cut left of a
+# file an older image wrote in place: it counts as not there).
+enrolled() { [ -s "$CRT" ] && [ -s "$KEY" ] && [ -s "$CA" ] && [ -s "$META" ]; }
 
 mkdir -p "$CERTS"
-if [ ! -f "$CRT" ] || [ ! -f "$KEY" ] || [ ! -f "$CA" ]; then
+if ! enrolled; then
+  # Some of the files but not all of them: an enrollment a power cut interrupted. The files that are
+  # there are left alone until a new enrollment has gone through, so nothing that could still be
+  # put right by hand is lost to a token that turns out to be spent.
+  PARTIAL=0
+  if [ -e "$CRT" ] || [ -e "$KEY" ] || [ -e "$CA" ] || [ -e "$META" ]; then
+    PARTIAL=1
+    echo "argus-probe: the enrollment files in $CERTS are incomplete (one is missing or empty, as a power cut while they were written leaves them) - enrolling again" >&2
+  fi
+  spent() {
+    if [ "$PARTIAL" = "1" ]; then
+      echo "argus-probe: this probe was enrolled before, and a token is used once: enroll it again with a new token from the Argus Probes page (its files in $CERTS were left as they are)" >&2
+    fi
+  }
+  if [ -z "${ARGUS_ENROLL_URL:-}" ] || [ -z "${ARGUS_ENROLL_TOKEN:-}" ]; then spent; fi
   : "${ARGUS_ENROLL_URL:?set ARGUS_ENROLL_URL to https://<argus-host>/api/enroll}"
   : "${ARGUS_ENROLL_TOKEN:?set ARGUS_ENROLL_TOKEN to the token from the Argus Probes page}"
   echo "argus-probe: enrolling against $ARGUS_ENROLL_URL"
 
-  openssl req -newkey rsa:2048 -nodes -keyout "$KEY" -out /tmp/probe.csr -subj "/CN=proxy" >/dev/null 2>&1
+  rm -f "$KEY.new" "$CRT.new" "$CA.new" "$META.new"
+  ( umask 077; openssl req -newkey rsa:2048 -nodes -keyout "$KEY.new" -out /tmp/probe.csr -subj "/CN=proxy" >/dev/null 2>&1 )
   BODY=$(jq -n --arg t "$ARGUS_ENROLL_TOKEN" --arg c "$(cat /tmp/probe.csr)" '{token:$t, csr:$c}')
   # Capture body + HTTP status separately so a non-200 surfaces Argus's actual error message
   # (curl -f would hide it).
@@ -94,16 +121,21 @@ if [ ! -f "$CRT" ] || [ ! -f "$KEY" ] || [ ! -f "$CA" ]; then
   rm -f /tmp/probe.csr /tmp/enroll.out
   if [ "$HTTP" != "200" ]; then
     echo "argus-probe: enrollment failed (HTTP $HTTP): ${RESP:-<no response - Argus unreachable?>}" >&2
-    rm -f "$KEY"
+    rm -f "$KEY.new"
+    spent
     exit 1
   fi
 
-  echo "$RESP" | jq -er '.certificate' > "$CRT"
-  echo "$RESP" | jq -er '.ca' > "$CA"
-  PROXY_NAME=$(echo "$RESP" | jq -er '.proxy_name')
+  if ! echo "$RESP" | jq -er '.certificate' > "$CRT.new" || ! echo "$RESP" | jq -er '.ca' > "$CA.new" \
+     || [ ! -s "$CRT.new" ] || [ ! -s "$CA.new" ] || [ ! -s "$KEY.new" ]; then
+    echo "argus-probe: enrollment returned no certificate" >&2
+    rm -f "$KEY.new" "$CRT.new" "$CA.new"
+    exit 1
+  fi
+  PROXY_NAME=$(echo "$RESP" | jq -r '.proxy_name // ""')
   if ! valid_name "$PROXY_NAME"; then
     echo "argus-probe: enrollment returned an unusable proxy name" >&2
-    rm -f "$KEY" "$CRT" "$CA"
+    rm -f "$KEY.new" "$CRT.new" "$CA.new"
     exit 1
   fi
   CORE_HOST=$(echo "$RESP" | jq -r '.core_host // ""')
@@ -114,8 +146,13 @@ if [ ! -f "$CRT" ] || [ ! -f "$KEY" ] || [ ! -f "$CA" ]; then
   [ -z "$CORE_HOST" ] || valid_host "$CORE_HOST" || drop CORE_HOST "core host"
   [ -z "$PROBE_TOKEN" ] || valid_token "$PROBE_TOKEN" || drop PROBE_TOKEN "token"
   [ -z "$CHECKIN_URL" ] || valid_url "$CHECKIN_URL" || CHECKIN_URL=""
+  # Into place, proxy.env last: it is the file that makes the enrollment count (see enrolled).
+  chmod 600 "$KEY.new"
+  to_disk
+  mv -f "$KEY.new" "$KEY"
+  mv -f "$CRT.new" "$CRT"
+  mv -f "$CA.new" "$CA"
   write_meta
-  chmod 600 "$KEY"
   echo "argus-probe: enrolled as $PROXY_NAME (core: ${CORE_HOST:-<from ZBX_SERVER_HOST>})"
 fi
 
