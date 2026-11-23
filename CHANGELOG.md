@@ -22,15 +22,23 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+- **Docs (probe VM README): what the OS patching installs by itself.** Security updates, and
+  Debian's point releases when they come out; it said "security suite only". Nothing changes on a VM.
+
+## [probe/v7.0.32-r29] - 2026-11-23
+
+### Changed
+- **Built on the refreshed Zabbix 7.0.32 base image.** Zabbix published its proxy image for 7.0.32
+  again on 2026-11-22, with newer system packages. The probe itself is the same as r28: nothing of
+  ours changed, and the Zabbix version is the same.
 - **CI: a refreshed Zabbix base image is a release of its own.** When Zabbix published the same
   version again (newer system packages), the daily job rebuilt `:latest` under the same `-rN` and
   cut no release: Unraid and Dockhand, which compare image digests, offered an update, while Argus,
   which compares versions, showed the probes as current, so a fleet updated from Argus never got
   the refreshed packages before the next change of ours. Such a rebuild now takes the next
   revision, with its own tag and Release, and reaches every probe the usual way. A manual run of
-  the job does the same.
-- **Docs (probe VM README): what the OS patching installs by itself.** Security updates, and
-  Debian's point releases when they come out; it said "security suite only". Nothing changes on a VM.
+  the job does the same. This release is the first one: it carries the base of 2026-11-22, which
+  had gone out under r28.
 
 ## [probe/v7.0.32-r28] - 2026-11-17
 
