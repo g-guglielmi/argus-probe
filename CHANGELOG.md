@@ -7,8 +7,10 @@ listed together newest first, each section headed by its exact release tag:
 - **Probe image** `probe/v<zabbix>-r<n>` - the self-enrolling Zabbix proxy image. The version is the
   Zabbix version it ships plus a revision for our own changes (`-r1` again after each Zabbix bump).
   CI cuts these by itself: every push to `deploy/probe-image/` on `main` is a release, and so is a
-  new upstream Zabbix version. To write the notes by hand, add a section for the **next** tag in the
-  same commit: the current revision is in `deploy/probe-image/.zabbix-base`, so the next one is
+  new upstream Zabbix version or the same version published again by Zabbix (the next revision,
+  with notes CI writes; it has no section here). To write the notes by hand, add a section for the
+  **next** tag in the same commit: the current revision is in `deploy/probe-image/.zabbix-base` on
+  the newest `main` (fetch first: CI may have cut a revision since), so the next one is
   `revision + 1`. With no matching section, the Release lists the commit subjects since the previous
   probe tag instead.
 - **Probe VM** `probe-vm/vX.Y.Z` - the self-configuring golden image. Released by pushing the tag;
@@ -20,6 +22,13 @@ listed together newest first, each section headed by its exact release tag:
 
 ## [Unreleased]
 
+- **CI: a refreshed Zabbix base image is a release of its own.** When Zabbix published the same
+  version again (newer system packages), the daily job rebuilt `:latest` under the same `-rN` and
+  cut no release: Unraid and Dockhand, which compare image digests, offered an update, while Argus,
+  which compares versions, showed the probes as current, so a fleet updated from Argus never got
+  the refreshed packages before the next change of ours. Such a rebuild now takes the next
+  revision, with its own tag and Release, and reaches every probe the usual way. A manual run of
+  the job does the same.
 - **Docs (probe VM README): what the OS patching installs by itself.** Security updates, and
   Debian's point releases when they come out; it said "security suite only". Nothing changes on a VM.
 

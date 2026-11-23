@@ -3,19 +3,26 @@ name: probe-image
 # Builds & releases the self-enrolling argus-probe image. Two triggers, one lifecycle:
 #   * push to deploy/probe-image/** on main  -> OUR wrapper changed: rebuild + a new revision release.
 #   * schedule / manual dispatch             -> upstream watch: rebuild when the Zabbix base DIGEST
-#     moves; cut a fresh release only when the Zabbix VERSION NUMBER changes.
+#     moves, and release what was built: -r1 of a new Zabbix VERSION NUMBER, or the next revision
+#     of the same one.
 #
-# argus-probe is versioned by the ZABBIX version it ships, plus a revision for our own wrapper edits:
+# argus-probe is versioned by the ZABBIX version it ships, plus a revision that counts every image
+# built on it, for a change of ours or for a base Zabbix published again:
 #   probe/v<zabbix>-r<n>   e.g. probe/v7.0.29-r1, then -r2 (wrapper fix), then 7.0.30-r1 (zabbix bump).
 # It is intentionally DECOUPLED from the app's v* semver: an app-only change never rebuilds a probe,
 # and an app release (build.yml, tag v*) no longer emits an argus-probe image at all.
 #
 # Docker Hub offers no push webhook a third party can subscribe to (only the repo owner can), so the
 # upstream half polls the base tag on a schedule - but it is change-driven, not a blind rebuild:
-#   * base DIGEST moved, same version  -> rebuild rolling tags (:latest, :zabbix-X) only, NO release
-#     (absorbs same-version Alpine/security rebuilds).
+#   * base DIGEST moved, same version  -> release probe/v<samever>-r<prev+1> (Zabbix published the
+#     same version again, with refreshed Alpine packages).
 #   * Zabbix VERSION NUMBER moved      -> release probe/v<newver>-r1.
 #   * our wrapper changed (push)       -> release probe/v<samever>-r<prev+1>.
+#
+# Every image that reaches :latest is a release with a name of its own. A refreshed base used to
+# move :latest under the same -rN: a host that compares digests (Unraid, Dockhand) offered the
+# update, while Argus, which compares versions, saw nothing new, so a fleet updated from Argus
+# never got the refreshed packages before the next change of ours.
 #
 # State (digest, version, revision, and the source commit it was built from) lives in
 # deploy/probe-image/.zabbix-base, bot-committed with [skip ci] so it never retriggers CI. Idle days do
@@ -227,9 +234,9 @@ jobs:
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "Zabbix version: $VER (previous: ${{ steps.last.outputs.version }})"
 
-      # Compute the revision and whether this build warrants a Release, and assemble the tag list.
-      # Rolling tags (:latest, :zabbix-X) are always pushed on a build; the immutable :X-rN tag is
-      # only pushed on a Release so it never moves once cut.
+      # Compute the revision and why this build happens, and assemble the tag list. Every build is a
+      # release: the rolling tags (:latest, :zabbix-X) move to it and it gets an immutable :X-rN tag
+      # of its own, which never moves once cut.
       - name: Plan version & tags
         id: plan
         if: steps.decide.outputs.build == 'true'
@@ -238,20 +245,21 @@ jobs:
           VER='${{ steps.ver.outputs.version }}'
           PREV_VER='${{ steps.last.outputs.version }}'
           PREV_REV='${{ steps.last.outputs.revision }}'
-          WRAPPER='${{ steps.decide.outputs.wrapper }}'
+          BASE_MOVED='${{ steps.decide.outputs.base_moved }}'
 
           if [ "$VER" != "$PREV_VER" ]; then
-            REV=1;                 RELEASE=true;  REASON=zabbix        # new Zabbix version
-          elif [ "$WRAPPER" = "true" ]; then
-            REV=$((PREV_REV + 1)); RELEASE=true;  REASON=wrapper       # our wrapper changed
+            REV=1;                 REASON=zabbix        # new Zabbix version
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            REV=$((PREV_REV + 1)); REASON=wrapper       # our wrapper changed
+          elif [ "$BASE_MOVED" = "true" ]; then
+            REV=$((PREV_REV + 1)); REASON=base-refresh  # the same Zabbix version, published again
           else
-            REV="$PREV_REV";       RELEASE=false; REASON=base-refresh  # same-version base rebuild
+            REV=$((PREV_REV + 1)); REASON=manual        # "Run workflow", nothing moved upstream
           fi
           if [ -z "$REV" ] || [ "$REV" = "0" ]; then REV=1; fi
 
           IMAGE="ghcr.io/${{ github.repository_owner }}/argus-probe"
           echo "revision=$REV" >> "$GITHUB_OUTPUT"
-          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
           echo "reason=$REASON" >> "$GITHUB_OUTPUT"
           echo "tag=probe/v${VER}-r${REV}" >> "$GITHUB_OUTPUT"
 
@@ -259,11 +267,11 @@ jobs:
             echo "tags<<EOF"
             echo "${IMAGE}:latest"
             echo "${IMAGE}:zabbix-${VER}"
-            if [ "$RELEASE" = "true" ]; then echo "${IMAGE}:${VER}-r${REV}"; fi
+            echo "${IMAGE}:${VER}-r${REV}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Planned: version=$VER revision=$REV release=$RELEASE reason=$REASON"
+          echo "Planned: version=$VER revision=$REV reason=$REASON"
 
       # The speed test's Ookla engine downloads Ookla's CLI on the probe and checks it against the
       # checksums argus_speedtest.py pins: confirm they still match Ookla's download before a release.
@@ -322,7 +330,7 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: cosign sign --yes "ghcr.io/${{ github.repository_owner }}/argus-probe@${DIGEST}"
 
-      # Record the new state (always, when built) and cut a Release when the plan calls for one.
+      # Record the new state and cut the Release of what was built.
       - name: Record state & release
         if: steps.decide.outputs.build == 'true'
         env:
@@ -330,7 +338,6 @@ jobs:
           VER: ${{ steps.ver.outputs.version }}
           PREV_VER: ${{ steps.last.outputs.version }}
           REV: ${{ steps.plan.outputs.revision }}
-          RELEASE: ${{ steps.plan.outputs.release }}
           REASON: ${{ steps.plan.outputs.reason }}
           TAG: ${{ steps.plan.outputs.tag }}
           NEW_DIGEST: ${{ steps.base.outputs.digest }}
@@ -347,11 +354,6 @@ jobs:
           # state commit on top of it, so recording the state never fails after the image was pushed.
           git pull -q --rebase origin main
           git push origin HEAD:main
-
-          if [ "$RELEASE" != "true" ]; then
-            echo "Same-version base refresh - rebuilt rolling tags only, no Release."
-            exit 0
-          fi
 
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             echo "Tag $TAG already exists - skipping Release."
@@ -381,6 +383,15 @@ jobs:
               echo "**argus-probe wrapper update** - the self-enrolling probe image changed"
               echo "(entrypoint / Dockerfile under \`deploy/probe-image/\`); the Zabbix base is unchanged."
               echo
+            elif [ "$REASON" = "base-refresh" ]; then
+              echo "**Refreshed base image** - Zabbix published its proxy image for ${VER} again, as it"
+              echo "does to take in newer system packages. This revision is the same probe built on it:"
+              echo "nothing of ours changed, and the Zabbix version is the same."
+              echo
+            elif [ "$REASON" = "manual" ]; then
+              echo "**Rebuilt by hand** - the probe built again from the current sources, on the current"
+              echo "Zabbix ${VER} base image and with the current system packages."
+              echo
             else
               echo "Automated rebuild - the upstream **Zabbix proxy** base image published a new version."
               echo
@@ -390,8 +401,12 @@ jobs:
               echo
               printf '%s\n\n' "$CHANGES"
             fi
-            if [ "$REASON" = "wrapper" ]; then
+            if [ "$REASON" = "wrapper" ] || [ "$REASON" = "manual" ]; then
               echo "- **Zabbix:** ${VER} (unchanged) · **revision:** r${REV}"
+            elif [ "$REASON" = "base-refresh" ]; then
+              echo "- **Zabbix:** ${VER} (unchanged) · **revision:** r${REV}"
+              echo "- **Base image:** \`${BASE_IMAGE}\`"
+              echo "- **Base digest:** \`${NEW_DIGEST}\`"
             else
               echo "- **Zabbix:** ${PREV_VER:-(initial)} → **${VER}** · **revision:** r${REV}"
               echo "- **Base image:** \`${BASE_IMAGE}\`"
@@ -400,10 +415,10 @@ jobs:
             fi
             echo "- The \`argus\` app image is versioned separately (\`vX.Y.Z\`); this release implies no app change."
           } > notes.md
-          if [ "$REASON" = "wrapper" ]; then
-            TITLE="argus-probe - Zabbix ${VER} (r${REV})"
-          else
+          if [ "$REASON" = "zabbix" ]; then
             TITLE="argus-probe - Zabbix ${VER}"
+          else
+            TITLE="argus-probe - Zabbix ${VER} (r${REV})"
           fi
           {
             echo

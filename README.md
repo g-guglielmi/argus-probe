@@ -156,6 +156,8 @@ name (argus-core DESIGN 18).
 - Container: `ghcr.io/g-guglielmi/argus-probe` (built by `.github/workflows/probe-image.yml`), for
   `linux/amd64` and `linux/arm64` (a Raspberry Pi 4 or 5 on a 64-bit OS) under the same tags.
 - Container **revisions** are also cut as GitHub Releases `probe/v<zabbix>-r<n>`, tracking the Zabbix base version (decoupled from the app's semver).
+  Every image that reaches `:latest` is one: a change of ours, a new Zabbix version (`-r1` again), or the
+  same Zabbix version published again upstream with newer system packages (the next revision).
 - Golden VM: GitHub Releases tagged `probe-vm/vX.Y.Z` (built by `.github/workflows/probe-vm.yml` on a
   `probe-vm/v*` tag or manual dispatch).
 - Installer stick: GitHub Releases tagged `installer/vX.Y.Z` (built and booted in QEMU by
